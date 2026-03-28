@@ -43,3 +43,7 @@ or
 ```bash
 wget -qO- https://raw.githubusercontent.com/lucaswilliameufrasio/igara/main/scripts/install.sh | sh
 ```
+
+## Contributing
+
+For instructions on setting up a development environment and managing dependencies, see [DEVELOPMENT.md](DEVELOPMENT.md).

@@ -1,4 +1,4 @@
-use color_eyre::eyre::{bail, Context, Result};
+use color_eyre::eyre::{Context, Result, bail};
 use std::process::Command;
 
 pub fn context_exists(name: &str) -> Result<bool> {
@@ -23,6 +23,11 @@ pub fn create_context(name: &str, ssh_alias: &str) -> Result<()> {
     if !status.success() {
         bail!("docker context create failed for '{name}'");
     }
+
+    // Also setup a buildx builder for this context to offload builds
+    let _ = Command::new("docker")
+        .args(["buildx", "create", "--name", name, "--use", name])
+        .status();
 
     Ok(())
 }
@@ -57,28 +62,22 @@ pub fn use_context(name: &str) -> Result<()> {
     Ok(())
 }
 
-pub fn docker_info(context_name: &str) -> Result<String> {
-    let output = Command::new("docker")
-        .args(["--context", context_name, "info", "--format", "{{json .}}"])
-        .output()
-        .context("failed to spawn docker info")?;
+pub fn run_docker_command(ssh_alias: &str, args: &[&str]) -> Result<()> {
+    let host = format!("ssh://{ssh_alias}");
+    let mut cmd_args = vec![
+        "-H",
+        &host,
+    ];
+    cmd_args.extend(args);
 
-    if !output.status.success() {
-        bail!("docker info failed for context '{context_name}'");
+    let status = Command::new("docker")
+        .args(cmd_args)
+        .status()
+        .context(format!("failed to run docker command with args {:?}", args))?;
+
+    if !status.success() {
+        bail!("docker command failed");
     }
 
-    Ok(String::from_utf8_lossy(&output.stdout).to_string())
-}
-
-pub fn docker_ps(context_name: &str) -> Result<String> {
-    let output = Command::new("docker")
-        .args(["--context", context_name, "ps", "--format", "json"])
-        .output()
-        .context("failed to spawn docker ps")?;
-
-    if !output.status.success() {
-        bail!("docker ps failed for context '{context_name}'");
-    }
-
-    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+    Ok(())
 }

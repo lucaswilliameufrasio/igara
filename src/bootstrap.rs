@@ -1,6 +1,6 @@
 use crate::models::PlatformFamily;
-use color_eyre::eyre::{bail, Context, Result};
-use std::process::Command;
+use color_eyre::eyre::{Context, Result, bail};
+use tokio::process::Command;
 
 #[derive(Debug, Clone)]
 pub struct InspectResult {
@@ -12,13 +12,13 @@ pub struct InspectResult {
     pub uname_m: Option<String>,
 }
 
-pub fn inspect(alias: &str) -> Result<InspectResult> {
-    let os_release = run_ssh(alias, "cat /etc/os-release")?;
+pub async fn inspect(alias: &str) -> Result<InspectResult> {
+    let os_release = run_ssh(alias, "cat /etc/os-release").await?;
     let platform_family = detect_platform_family(&os_release);
-    let has_docker = run_ssh_status(alias, "command -v docker >/dev/null 2>&1")?;
-    let has_tailscale = run_ssh_status(alias, "command -v tailscale >/dev/null 2>&1")?;
-    let has_buildx = run_ssh_status(alias, "docker buildx version >/dev/null 2>&1")?;
-    let uname_m = Some(run_ssh(alias, "uname -m")?.trim().to_string());
+    let has_docker = run_ssh_status(alias, "command -v docker >/dev/null 2>&1").await?;
+    let has_tailscale = run_ssh_status(alias, "command -v tailscale >/dev/null 2>&1").await?;
+    let has_buildx = run_ssh_status(alias, "docker buildx version >/dev/null 2>&1").await?;
+    let uname_m = Some(run_ssh(alias, "uname -m").await?.trim().to_string());
 
     Ok(InspectResult {
         platform_family,
@@ -30,12 +30,13 @@ pub fn inspect(alias: &str) -> Result<InspectResult> {
     })
 }
 
-pub fn apply(alias: &str, family: PlatformFamily) -> Result<()> {
+pub async fn apply(alias: &str, family: PlatformFamily) -> Result<()> {
     let commands = match family {
         PlatformFamily::Arch => vec![
             "sudo pacman -Sy --noconfirm docker tailscale",
             "sudo systemctl enable --now docker",
             "sudo systemctl enable --now tailscaled",
+            "sudo usermod -aG docker $(whoami)",
             r#"sudo mkdir -p /etc/docker && printf '{\n  \"features\": {\n    \"buildkit\": true\n  }\n}\n' | sudo tee /etc/docker/daemon.json >/dev/null"#,
             "sudo systemctl restart docker",
         ],
@@ -44,6 +45,7 @@ pub fn apply(alias: &str, family: PlatformFamily) -> Result<()> {
             "sudo apt-get install -y docker.io tailscale",
             "sudo systemctl enable --now docker",
             "sudo systemctl enable --now tailscaled",
+            "sudo usermod -aG docker $(whoami)",
             r#"sudo mkdir -p /etc/docker && printf '{\n  \"features\": {\n    \"buildkit\": true\n  }\n}\n' | sudo tee /etc/docker/daemon.json >/dev/null"#,
             "sudo systemctl restart docker",
         ],
@@ -51,6 +53,7 @@ pub fn apply(alias: &str, family: PlatformFamily) -> Result<()> {
             "sudo dnf install -y docker tailscale",
             "sudo systemctl enable --now docker",
             "sudo systemctl enable --now tailscaled",
+            "sudo usermod -aG docker $(whoami)",
             r#"sudo mkdir -p /etc/docker && printf '{\n  \"features\": {\n    \"buildkit\": true\n  }\n}\n' | sudo tee /etc/docker/daemon.json >/dev/null"#,
             "sudo systemctl restart docker",
         ],
@@ -62,6 +65,7 @@ pub fn apply(alias: &str, family: PlatformFamily) -> Result<()> {
             .arg(alias)
             .arg(command)
             .status()
+            .await
             .with_context(|| format!("failed to run remote command: {command}"))?;
         if !status.success() {
             bail!("remote bootstrap command failed: {command}");
@@ -71,11 +75,12 @@ pub fn apply(alias: &str, family: PlatformFamily) -> Result<()> {
     Ok(())
 }
 
-fn run_ssh(alias: &str, command: &str) -> Result<String> {
+async fn run_ssh(alias: &str, command: &str) -> Result<String> {
     let output = Command::new("ssh")
         .arg(alias)
         .arg(command)
         .output()
+        .await
         .with_context(|| format!("failed to run remote command: {command}"))?;
 
     if !output.status.success() {
@@ -85,11 +90,12 @@ fn run_ssh(alias: &str, command: &str) -> Result<String> {
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
 
-fn run_ssh_status(alias: &str, command: &str) -> Result<bool> {
+async fn run_ssh_status(alias: &str, command: &str) -> Result<bool> {
     let status = Command::new("ssh")
         .arg(alias)
         .arg(command)
         .status()
+        .await
         .with_context(|| format!("failed to run remote status command: {command}"))?;
     Ok(status.success())
 }
@@ -104,5 +110,20 @@ fn detect_platform_family(os_release: &str) -> PlatformFamily {
         PlatformFamily::Fedora
     } else {
         PlatformFamily::Unknown
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_detect_platform_family() {
+        assert_eq!(detect_platform_family("ID=arch\n"), PlatformFamily::Arch);
+        assert_eq!(detect_platform_family("ID=cachyos\n"), PlatformFamily::Arch);
+        assert_eq!(detect_platform_family("ID=ubuntu\n"), PlatformFamily::Debian);
+        assert_eq!(detect_platform_family("ID=debian\n"), PlatformFamily::Debian);
+        assert_eq!(detect_platform_family("ID=fedora\n"), PlatformFamily::Fedora);
+        assert_eq!(detect_platform_family("ID=gentoo\n"), PlatformFamily::Unknown);
     }
 }

@@ -37,6 +37,8 @@ pub enum HostCommands {
     Show { name: String },
     Remove { name: String },
     Use { name: String },
+    BootstrapAll,
+    HealthAll,
 }
 
 #[derive(Debug, Args)]
@@ -51,6 +53,8 @@ pub struct AddHostArgs {
     pub port: u16,
     #[arg(long, default_value = "tailscale")]
     pub mode: String,
+    #[arg(long)]
+    pub proxy_jump: Option<String>,
     #[arg(long, value_delimiter = ',', default_value = "")]
     pub tags: Vec<String>,
     #[arg(long, default_value_t = false)]

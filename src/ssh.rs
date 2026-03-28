@@ -1,8 +1,10 @@
 use crate::config::AppPaths;
-use color_eyre::eyre::{bail, Context, Result};
+use color_eyre::eyre::{Context, Result, bail};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use tokio::io::AsyncWriteExt;
+use tokio::process::Command;
+use std::process::Stdio;
 
 pub fn key_path(paths: &AppPaths, alias: &str) -> PathBuf {
     paths.keys_dir.join(format!("{alias}_ed25519"))
@@ -13,7 +15,7 @@ pub fn generate_host_key(key_path: &Path, comment: &str) -> Result<()> {
         return Ok(());
     }
 
-    let status = Command::new("ssh-keygen")
+    let status = std::process::Command::new("ssh-keygen")
         .args(["-t", "ed25519", "-C", comment, "-f"])
         .arg(key_path)
         .args(["-N", ""])
@@ -27,11 +29,25 @@ pub fn generate_host_key(key_path: &Path, comment: &str) -> Result<()> {
     Ok(())
 }
 
-pub fn render_ssh_block(alias: &str, hostname: &str, user: &str, port: u16, key_path: &Path) -> String {
-    format!(
-        "# >>> igara managed: {alias} >>>\nHost {alias}\n  HostName {hostname}\n  User {user}\n  Port {port}\n  IdentityFile {}\n  IdentitiesOnly yes\n  ServerAliveInterval 30\n  ServerAliveCountMax 120\n  TCPKeepAlive yes\n# <<< igara managed: {alias} <<<\n",
+pub fn render_ssh_block(
+    alias: &str,
+    hostname: &str,
+    user: &str,
+    port: u16,
+    key_path: &Path,
+    proxy_jump: Option<&str>,
+) -> String {
+    let mut block = format!(
+        "# >>> igara managed: {alias} >>>\nHost {alias}\n  HostName {hostname}\n  User {user}\n  Port {port}\n  IdentityFile {}\n  IdentitiesOnly yes\n  ServerAliveInterval 30\n  ServerAliveCountMax 120\n  TCPKeepAlive yes\n",
         key_path.display()
-    )
+    );
+
+    if let Some(jump) = proxy_jump {
+        block.push_str(&format!("  ProxyJump {jump}\n"));
+    }
+
+    block.push_str(&format!("# <<< igara managed: {alias} <<<\n"));
+    block
 }
 
 pub fn upsert_managed_block(ssh_config_path: &Path, alias: &str, block: &str) -> Result<()> {
@@ -64,7 +80,7 @@ pub fn upsert_managed_block(ssh_config_path: &Path, alias: &str, block: &str) ->
         if !new_content.is_empty() && !new_content.ends_with('\n') {
             new_content.push('\n');
         }
-        new_content.push('\n');
+        new_content.push_str("\n");
         new_content.push_str(block);
         new_content
     };
@@ -97,10 +113,11 @@ pub fn remove_managed_block(ssh_config_path: &Path, alias: &str) -> Result<()> {
     Ok(())
 }
 
-pub fn test_ssh(alias: &str) -> Result<()> {
+pub async fn test_ssh(alias: &str) -> Result<()> {
     let status = Command::new("ssh")
-        .args(["-o", "BatchMode=yes", alias, "true"])
+        .args(["-o", "BatchMode=yes", "-o", "ConnectTimeout=5", alias, "true"])
         .status()
+        .await
         .context("failed to spawn ssh")?;
 
     if !status.success() {
@@ -110,13 +127,14 @@ pub fn test_ssh(alias: &str) -> Result<()> {
     Ok(())
 }
 
-pub fn install_public_key(alias: &str, pub_key_path: &Path) -> Result<()> {
+pub async fn install_public_key(alias: &str, pub_key_path: &Path) -> Result<()> {
     if which::which("ssh-copy-id").is_ok() {
         let status = Command::new("ssh-copy-id")
             .arg("-i")
             .arg(pub_key_path)
             .arg(alias)
             .status()
+            .await
             .context("failed to spawn ssh-copy-id")?;
         if !status.success() {
             bail!("ssh-copy-id failed for host alias '{alias}'");
@@ -127,21 +145,81 @@ pub fn install_public_key(alias: &str, pub_key_path: &Path) -> Result<()> {
     let public_key = fs::read_to_string(pub_key_path)
         .with_context(|| format!("failed to read {}", pub_key_path.display()))?;
 
-    let remote_cmd = format!(
-        "mkdir -p ~/.ssh && chmod 700 ~/.ssh && grep -qxF '{}' ~/.ssh/authorized_keys || echo '{}' >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys",
-        public_key.trim(),
-        public_key.trim()
-    );
+    // Securely pipe public key to remote host using $(cat) for the grep check
+    let remote_cmd = "mkdir -p ~/.ssh && chmod 700 ~/.ssh && PK=\"$(cat)\"; grep -qxF \"$PK\" ~/.ssh/authorized_keys || echo \"$PK\" >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys";
 
-    let status = Command::new("ssh")
+    let mut child = Command::new("ssh")
         .arg(alias)
+        .arg("bash")
+        .arg("-c")
         .arg(remote_cmd)
-        .status()
-        .context("failed to append public key over ssh")?;
+        .stdin(Stdio::piped())
+        .spawn()
+        .context("failed to spawn ssh for public key installation")?;
+
+    let mut stdin = child.stdin.take().expect("failed to open stdin");
+    stdin.write_all(public_key.trim().as_bytes()).await?;
+    drop(stdin);
+
+    let status = child.wait().await.context("failed to wait for ssh child process")?;
 
     if !status.success() {
         bail!("failed to install public key on host alias '{alias}'");
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::NamedTempFile;
+
+    #[test]
+    fn test_render_ssh_block() {
+        let block = render_ssh_block("alias", "host", "user", 22, Path::new("/path/to/key"), None);
+        assert!(block.contains("Host alias"));
+        assert!(block.contains("HostName host"));
+        assert!(block.contains("User user"));
+        assert!(block.contains("Port 22"));
+        assert!(block.contains("IdentityFile /path/to/key"));
+        assert!(!block.contains("ProxyJump"));
+
+        let block_jump = render_ssh_block("alias", "host", "user", 22, Path::new("/path/to/key"), Some("bastion"));
+        assert!(block_jump.contains("ProxyJump bastion"));
+    }
+
+    #[tokio::test]
+    async fn test_upsert_and_remove_ssh_block() -> Result<()> {
+        let temp_file = NamedTempFile::new()?;
+        let path = temp_file.path();
+
+        // 1. Initial Insert
+        let block1 = render_ssh_block("host1", "1.1.1.1", "root", 22, Path::new("/key1"), None);
+        upsert_managed_block(path, "host1", &block1)?;
+        let content = fs::read_to_string(path)?;
+        assert!(content.contains("Host host1"));
+
+        // 2. Insert another host
+        let block2 = render_ssh_block("host2", "2.2.2.2", "root", 22, Path::new("/key2"), None);
+        upsert_managed_block(path, "host2", &block2)?;
+        let content = fs::read_to_string(path)?;
+        assert!(content.contains("Host host1"));
+        assert!(content.contains("Host host2"));
+
+        // 3. Update host1 (upsert)
+        let block1_updated = render_ssh_block("host1", "1.1.1.2", "root", 22, Path::new("/key1"), None);
+        upsert_managed_block(path, "host1", &block1_updated)?;
+        let content = fs::read_to_string(path)?;
+        assert!(content.contains("HostName 1.1.1.2"));
+        assert!(content.contains("Host host2"));
+
+        // 4. Remove host1
+        remove_managed_block(path, "host1")?;
+        let content = fs::read_to_string(path)?;
+        assert!(!content.contains("Host host1"));
+        assert!(content.contains("Host host2"));
+
+        Ok(())
+    }
 }

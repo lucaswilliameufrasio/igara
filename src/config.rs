@@ -1,4 +1,4 @@
-use color_eyre::eyre::{eyre, Context, Result};
+use color_eyre::eyre::{Context, Result, eyre};
 use directories::ProjectDirs;
 use std::env;
 use std::fs;
@@ -39,8 +39,17 @@ impl AppPaths {
 
     pub fn ensure(&self) -> Result<()> {
         for dir in [&self.root_dir, &self.keys_dir, &self.db_dir, &self.logs_dir] {
-            fs::create_dir_all(dir).with_context(|| format!("failed to create {}", dir.display()))?;
+            fs::create_dir_all(dir)
+                .with_context(|| format!("failed to create {}", dir.display()))?;
         }
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&self.keys_dir, fs::Permissions::from_mode(0o700))
+                .with_context(|| format!("failed to set 0700 permissions on {}", self.keys_dir.display()))?;
+        }
+
         Ok(())
     }
 
@@ -49,5 +58,36 @@ impl AppPaths {
         let ssh_dir = PathBuf::from(home).join(".ssh");
         fs::create_dir_all(&ssh_dir)?;
         Ok(ssh_dir.join("config"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[test]
+    fn test_app_paths_env_and_ensure() -> Result<()> {
+        let dir = tempdir()?;
+        let path_str = dir.path().to_str().unwrap();
+        
+        // Use a single test to avoid race conditions with environment variables
+        unsafe {
+            env::set_var("IGARA_CONFIG_DIR", path_str);
+        }
+
+        let paths = AppPaths::resolve()?;
+        assert_eq!(paths.root_dir, dir.path());
+        assert!(paths.db_file.to_str().unwrap().contains("igara.sqlite3"));
+
+        paths.ensure()?;
+        assert!(paths.keys_dir.exists());
+        assert!(paths.db_dir.exists());
+        assert!(paths.logs_dir.exists());
+
+        unsafe {
+            env::remove_var("IGARA_CONFIG_DIR");
+        }
+        Ok(())
     }
 }
