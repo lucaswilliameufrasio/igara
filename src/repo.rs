@@ -255,7 +255,7 @@ impl HostRepository {
 mod tests {
     use super::*;
     use crate::db::run_migrations;
-    use crate::models::{ConnectionMode, HostProfile};
+    use crate::models::{ConnectionMode, CreateHostOptions, HostProfile};
 
     fn setup_db() -> Connection {
         let mut conn = Connection::open_in_memory().unwrap();
@@ -269,16 +269,16 @@ mod tests {
         let conn = setup_db();
         let repo = HostRepository::new(conn);
 
-        let host = HostProfile::new(
-            "test-host".to_string(),
-            "1.2.3.4".to_string(),
-            "user".to_string(),
-            22,
-            ConnectionMode::Lan,
-            None,
-            "/tmp/key".to_string(),
-            vec!["tag1".to_string(), "tag2".to_string()],
-        );
+        let host = HostProfile::new(CreateHostOptions {
+            name: "test-host".to_string(),
+            hostname: "1.2.3.4".to_string(),
+            user_name: "user".to_string(),
+            port: 22,
+            connection_mode: ConnectionMode::Lan,
+            proxy_jump: None,
+            ssh_key_path: "/tmp/key".to_string(),
+            tags: vec!["tag1".to_string(), "tag2".to_string()],
+        });
 
         repo.insert_host(&host)?;
 
@@ -295,26 +295,26 @@ mod tests {
         let conn = setup_db();
         let repo = HostRepository::new(conn);
 
-        let host1 = HostProfile::new(
-            "host1".to_string(),
-            "1.1.1.1".to_string(),
-            "user".to_string(),
-            22,
-            ConnectionMode::Lan,
-            None,
-            "/tmp/key1".to_string(),
-            vec![],
-        );
-        let host2 = HostProfile::new(
-            "host2".to_string(),
-            "2.2.2.2".to_string(),
-            "user".to_string(),
-            22,
-            ConnectionMode::Lan,
-            None,
-            "/tmp/key2".to_string(),
-            vec![],
-        );
+        let host1 = HostProfile::new(CreateHostOptions {
+            name: "host1".to_string(),
+            hostname: "1.1.1.1".to_string(),
+            user_name: "user".to_string(),
+            port: 22,
+            connection_mode: ConnectionMode::Lan,
+            proxy_jump: None,
+            ssh_key_path: "/tmp/key1".to_string(),
+            tags: vec![],
+        });
+        let host2 = HostProfile::new(CreateHostOptions {
+            name: "host2".to_string(),
+            hostname: "2.2.2.2".to_string(),
+            user_name: "user".to_string(),
+            port: 22,
+            connection_mode: ConnectionMode::Lan,
+            proxy_jump: None,
+            ssh_key_path: "/tmp/key2".to_string(),
+            tags: vec![],
+        });
 
         repo.insert_host(&host1)?;
         repo.insert_host(&host2)?;
@@ -332,16 +332,16 @@ mod tests {
         let conn = setup_db();
         let repo = HostRepository::new(conn);
 
-        let host = HostProfile::new(
-            "to-delete".to_string(),
-            "1.1.1.1".to_string(),
-            "user".to_string(),
-            22,
-            ConnectionMode::Lan,
-            None,
-            "/tmp/key".to_string(),
-            vec![],
-        );
+        let host = HostProfile::new(CreateHostOptions {
+            name: "to-delete".to_string(),
+            hostname: "1.1.1.1".to_string(),
+            user_name: "user".to_string(),
+            port: 22,
+            connection_mode: ConnectionMode::Lan,
+            proxy_jump: None,
+            ssh_key_path: "/tmp/key".to_string(),
+            tags: vec![],
+        });
 
         repo.insert_host(&host)?;
         assert!(repo.delete_host("to-delete")?);

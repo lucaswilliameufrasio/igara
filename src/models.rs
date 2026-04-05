@@ -103,33 +103,35 @@ pub struct HostProfile {
     pub updated_at: DateTime<Utc>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreateHostOptions {
+    pub name: String,
+    pub hostname: String,
+    pub user_name: String,
+    pub port: u16,
+    pub connection_mode: ConnectionMode,
+    pub proxy_jump: Option<String>,
+    pub ssh_key_path: String,
+    pub tags: Vec<String>,
+}
+
 impl HostProfile {
-    #[allow(clippy::too_many_arguments)]
-    pub fn new(
-        name: String,
-        hostname: String,
-        user_name: String,
-        port: u16,
-        connection_mode: ConnectionMode,
-        proxy_jump: Option<String>,
-        ssh_key_path: String,
-        tags: Vec<String>,
-    ) -> Self {
+    pub fn new(opts: CreateHostOptions) -> Self {
         let now = Utc::now();
         Self {
             id: HostId::new(),
-            ssh_alias: name.clone(),
-            docker_context_name: name.clone(),
-            name,
-            hostname,
-            user_name,
-            port,
-            connection_mode,
+            ssh_alias: opts.name.clone(),
+            docker_context_name: opts.name.clone(),
+            name: opts.name,
+            hostname: opts.hostname,
+            user_name: opts.user_name,
+            port: opts.port,
+            connection_mode: opts.connection_mode,
             platform_family: None,
-            proxy_jump,
-            ssh_key_path,
+            proxy_jump: opts.proxy_jump,
+            ssh_key_path: opts.ssh_key_path,
             is_default: false,
-            tags,
+            tags: opts.tags,
             health: None,
             created_at: now,
             updated_at: now,
@@ -245,16 +247,16 @@ mod tests {
 
     #[test]
     fn test_host_profile_with_extras() {
-        let host = HostProfile::new(
-            "bastion-host".to_string(),
-            "1.1.1.1".to_string(),
-            "root".to_string(),
-            22,
-            ConnectionMode::Public,
-            Some("proxy.example.com".to_string()),
-            "/key".to_string(),
-            vec!["prod".to_string()],
-        );
+        let host = HostProfile::new(CreateHostOptions {
+            name: "bastion-host".to_string(),
+            hostname: "1.1.1.1".to_string(),
+            user_name: "root".to_string(),
+            port: 22,
+            connection_mode: ConnectionMode::Public,
+            proxy_jump: Some("proxy.example.com".to_string()),
+            ssh_key_path: "/key".to_string(),
+            tags: vec!["prod".to_string()],
+        });
 
         assert_eq!(host.proxy_jump, Some("proxy.example.com".to_string()));
         assert!(host.health.is_none());

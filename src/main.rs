@@ -14,7 +14,7 @@ use clap::Parser;
 use cli::{BootstrapCommands, Cli, Commands, DockerCommands, HostCommands, SshCommands};
 use color_eyre::eyre::Result;
 use config::AppPaths;
-use models::{ConnectionMode, HostProfile};
+use models::{ConnectionMode, CreateHostOptions, HostProfile};
 use repo::HostRepository;
 use std::sync::Arc;
 use tracing_subscriber::EnvFilter;
@@ -50,16 +50,16 @@ async fn main() -> Result<()> {
                 );
                 ssh::upsert_managed_block(&paths.ssh_config_path()?, &args.name, &ssh_block)?;
 
-                let host = HostProfile::new(
-                    args.name.clone(),
-                    args.hostname,
-                    args.user,
-                    args.port,
-                    mode,
-                    args.proxy_jump.clone(),
-                    key_path.display().to_string(),
-                    args.tags.into_iter().filter(|t| !t.is_empty()).collect(),
-                );
+                let host = HostProfile::new(CreateHostOptions {
+                    name: args.name.clone(),
+                    hostname: args.hostname,
+                    user_name: args.user,
+                    port: args.port,
+                    connection_mode: mode,
+                    proxy_jump: args.proxy_jump.clone(),
+                    ssh_key_path: key_path.display().to_string(),
+                    tags: args.tags.into_iter().filter(|t| !t.is_empty()).collect(),
+                });
                 repo.insert_host(&host)?;
 
                 if args.install_key {
