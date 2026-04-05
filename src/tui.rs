@@ -1,8 +1,8 @@
+use crate::bootstrap;
 use crate::models::HostProfile;
 use crate::repo::HostRepository;
-use crate::bootstrap;
-use crate::ssh;
 use crate::services::{self, SharedService};
+use crate::ssh;
 use color_eyre::eyre::Result;
 use crossterm::event::{self, Event, KeyCode};
 use crossterm::execute;
@@ -34,7 +34,9 @@ impl App {
             hosts,
             repo,
             table_state,
-            status: "Arrows: navigate. s: ssh, b: bootstrap, h: health, p: postgres, v: valkey, q: quit".to_string(),
+            status:
+                "Arrows: navigate. s: ssh, b: bootstrap, h: health, p: postgres, v: valkey, q: quit"
+                    .to_string(),
         }
     }
 
@@ -102,7 +104,13 @@ pub async fn run(hosts: Vec<HostProfile>, repo: Arc<HostRepository>) -> Result<(
 
             let rows = app.hosts.iter().map(|host| {
                 let health_status = match host.health {
-                    Some(ref h) => if h.is_up { "UP" } else { "DOWN" },
+                    Some(ref h) => {
+                        if h.is_up {
+                            "UP"
+                        } else {
+                            "DOWN"
+                        }
+                    }
                     None => "UNKNOWN",
                 };
                 Row::new(vec![
@@ -126,91 +134,92 @@ pub async fn run(hosts: Vec<HostProfile>, repo: Arc<HostRepository>) -> Result<(
             .header(Row::new(vec!["Name", "Host", "User", "Mode", "Health"]))
             .block(Block::default().title("Hosts").borders(Borders::ALL))
             .highlight_symbol(">> ")
-            .row_highlight_style(ratatui::style::Style::default().add_modifier(ratatui::style::Modifier::REVERSED));
-            
+            .row_highlight_style(
+                ratatui::style::Style::default().add_modifier(ratatui::style::Modifier::REVERSED),
+            );
+
             frame.render_stateful_widget(table, chunks[1], &mut app.table_state);
 
             frame.render_widget(Paragraph::new(app.status.as_str()), chunks[2]);
         })?;
 
-        if event::poll(Duration::from_millis(250))? {
-            if let Event::Key(key) = event::read()? {
-                if key.kind == event::KeyEventKind::Press {
-                    match key.code {
-                        KeyCode::Char('q') => break,
-                        KeyCode::Down | KeyCode::Char('j') => app.next(),
-                        KeyCode::Up | KeyCode::Char('k') => app.previous(),
-                        KeyCode::Char('s') => {
-                            if let Some(host) = app.selected_host() {
-                                let alias = host.ssh_alias.clone();
-                                // Exit TUI temporarily
-                                disable_raw_mode()?;
-                                execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
-                                
-                                println!("Connecting to {}...", alias);
-                                let mut child = std::process::Command::new("ssh")
-                                    .arg(&alias)
-                                    .spawn()?;
-                                child.wait()?;
-                                
-                                // Re-enter TUI
-                                enable_raw_mode()?;
-                                execute!(terminal.backend_mut(), EnterAlternateScreen)?;
-                                terminal.clear()?;
-                            }
-                        }
-                        KeyCode::Char('p') => {
-                            if let Some(host) = app.selected_host() {
-                                let host_clone = host.clone();
-                                app.status = format!("Deploying Postgres to {}...", host.name);
-                                tokio::spawn(async move {
-                                    let _ = services::deploy_service(&host_clone, SharedService::Postgres).await;
-                                });
-                            }
-                        }
-                        KeyCode::Char('v') => {
-                            if let Some(host) = app.selected_host() {
-                                let host_clone = host.clone();
-                                app.status = format!("Deploying Valkey to {}...", host.name);
-                                tokio::spawn(async move {
-                                    let _ = services::deploy_service(&host_clone, SharedService::Valkey).await;
-                                });
-                            }
-                        }
-                        KeyCode::Char('h') => {
-                            if let Some(host) = app.selected_host() {
-                                let alias = host.ssh_alias.clone();
-                                let host_id = host.id.clone();
-                                let repo = Arc::clone(&app.repo);
-                                app.status = format!("Checking health for {}...", host.name);
-                                tokio::spawn(async move {
-                                    let is_up = ssh::test_ssh(&alias).await.is_ok();
-                                    let _ = repo.update_health(&host_id, is_up);
-                                });
-                            }
-                        }
-                        KeyCode::Char('b') => {
-                            if let Some(host) = app.selected_host() {
-                                let alias = host.ssh_alias.clone();
-                                let host_name = host.name.clone();
-                                app.status = format!("Bootstrapping {} in background...", host_name);
-                                tokio::spawn(async move {
-                                    if let Ok(result) = bootstrap::inspect(&alias).await {
-                                        let _ = bootstrap::apply(&alias, result.platform_family).await;
-                                    }
-                                });
-                            }
-                        }
-                        KeyCode::Char('r') => {
-                            app.refresh_hosts().await?;
-                            app.status = "Refreshed hosts".to_string();
-                        }
-                        _ => {}
+        if event::poll(Duration::from_millis(250))?
+            && let Event::Key(key) = event::read()?
+            && key.kind == event::KeyEventKind::Press
+        {
+            match key.code {
+                KeyCode::Char('q') => break,
+                KeyCode::Down | KeyCode::Char('j') => app.next(),
+                KeyCode::Up | KeyCode::Char('k') => app.previous(),
+                KeyCode::Char('s') => {
+                    if let Some(host) = app.selected_host() {
+                        let alias = host.ssh_alias.clone();
+                        // Exit TUI temporarily
+                        disable_raw_mode()?;
+                        execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+
+                        println!("Connecting to {}...", alias);
+                        let mut child = std::process::Command::new("ssh").arg(&alias).spawn()?;
+                        child.wait()?;
+
+                        // Re-enter TUI
+                        enable_raw_mode()?;
+                        execute!(terminal.backend_mut(), EnterAlternateScreen)?;
+                        terminal.clear()?;
                     }
                 }
+                KeyCode::Char('p') => {
+                    if let Some(host) = app.selected_host() {
+                        let host_clone = host.clone();
+                        app.status = format!("Deploying Postgres to {}...", host.name);
+                        tokio::spawn(async move {
+                            let _ = services::deploy_service(&host_clone, SharedService::Postgres)
+                                .await;
+                        });
+                    }
+                }
+                KeyCode::Char('v') => {
+                    if let Some(host) = app.selected_host() {
+                        let host_clone = host.clone();
+                        app.status = format!("Deploying Valkey to {}...", host.name);
+                        tokio::spawn(async move {
+                            let _ =
+                                services::deploy_service(&host_clone, SharedService::Valkey).await;
+                        });
+                    }
+                }
+                KeyCode::Char('h') => {
+                    if let Some(host) = app.selected_host() {
+                        let alias = host.ssh_alias.clone();
+                        let host_id = host.id.clone();
+                        let repo = Arc::clone(&app.repo);
+                        app.status = format!("Checking health for {}...", host.name);
+                        tokio::spawn(async move {
+                            let is_up = ssh::test_ssh(&alias).await.is_ok();
+                            let _ = repo.update_health(&host_id, is_up);
+                        });
+                    }
+                }
+                KeyCode::Char('b') => {
+                    if let Some(host) = app.selected_host() {
+                        let alias = host.ssh_alias.clone();
+                        let host_name = host.name.clone();
+                        app.status = format!("Bootstrapping {} in background...", host_name);
+                        tokio::spawn(async move {
+                            if let Ok(result) = bootstrap::inspect(&alias).await {
+                                let _ = bootstrap::apply(&alias, result.platform_family).await;
+                            }
+                        });
+                    }
+                }
+                KeyCode::Char('r') => {
+                    app.refresh_hosts().await?;
+                    app.status = "Refreshed hosts".to_string();
+                }
+                _ => {}
             }
         }
-        
+
         // Auto-refresh to see health updates (optional, but good for UX)
         app.refresh_hosts().await?;
     }

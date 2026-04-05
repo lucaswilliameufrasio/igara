@@ -2,9 +2,9 @@ use crate::config::AppPaths;
 use color_eyre::eyre::{Context, Result, bail};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Stdio;
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
-use std::process::Stdio;
 
 pub fn key_path(paths: &AppPaths, alias: &str) -> PathBuf {
     paths.keys_dir.join(format!("{alias}_ed25519"))
@@ -80,7 +80,7 @@ pub fn upsert_managed_block(ssh_config_path: &Path, alias: &str, block: &str) ->
         if !new_content.is_empty() && !new_content.ends_with('\n') {
             new_content.push('\n');
         }
-        new_content.push_str("\n");
+        new_content.push('\n');
         new_content.push_str(block);
         new_content
     };
@@ -115,7 +115,14 @@ pub fn remove_managed_block(ssh_config_path: &Path, alias: &str) -> Result<()> {
 
 pub async fn test_ssh(alias: &str) -> Result<()> {
     let status = Command::new("ssh")
-        .args(["-o", "BatchMode=yes", "-o", "ConnectTimeout=5", alias, "true"])
+        .args([
+            "-o",
+            "BatchMode=yes",
+            "-o",
+            "ConnectTimeout=5",
+            alias,
+            "true",
+        ])
         .status()
         .await
         .context("failed to spawn ssh")?;
@@ -161,7 +168,10 @@ pub async fn install_public_key(alias: &str, pub_key_path: &Path) -> Result<()> 
     stdin.write_all(public_key.trim().as_bytes()).await?;
     drop(stdin);
 
-    let status = child.wait().await.context("failed to wait for ssh child process")?;
+    let status = child
+        .wait()
+        .await
+        .context("failed to wait for ssh child process")?;
 
     if !status.success() {
         bail!("failed to install public key on host alias '{alias}'");
@@ -170,18 +180,21 @@ pub async fn install_public_key(alias: &str, pub_key_path: &Path) -> Result<()> 
     Ok(())
 }
 
+#[allow(dead_code)]
 pub async fn push_binary(alias: &str, local_path: &Path, remote_dest: &str) -> Result<()> {
     if !local_path.exists() {
         bail!("local binary not found at {}", local_path.display());
     }
 
-    let binary_name = local_path.file_name()
+    let binary_name = local_path
+        .file_name()
         .and_then(|n| n.to_str())
         .ok_or_else(|| color_eyre::eyre::eyre!("invalid binary path"))?;
 
     // Create a tar archive of the binary and pipe it to the remote host
-    let remote_cmd = format!("mkdir -p $(dirname {remote_dest}) && tar -x -C $(dirname {remote_dest})");
-    
+    let remote_cmd =
+        format!("mkdir -p $(dirname {remote_dest}) && tar -x -C $(dirname {remote_dest})");
+
     let mut child = Command::new("ssh")
         .arg(alias)
         .arg(remote_cmd)
@@ -190,7 +203,7 @@ pub async fn push_binary(alias: &str, local_path: &Path, remote_dest: &str) -> R
         .context("failed to spawn ssh for binary transfer")?;
 
     let mut stdin = child.stdin.take().expect("failed to open stdin");
-    
+
     // Run tar locally to archive the binary (async)
     let mut local_tar = Command::new("tar")
         .arg("-c")
@@ -204,7 +217,7 @@ pub async fn push_binary(alias: &str, local_path: &Path, remote_dest: &str) -> R
     if let Some(mut local_stdout) = local_tar.stdout.take() {
         tokio::io::copy(&mut local_stdout, &mut stdin).await?;
     }
-    
+
     drop(stdin);
     let status = child.wait().await?;
     let _ = local_tar.wait().await?;
@@ -242,7 +255,14 @@ mod tests {
         assert!(block.contains("IdentityFile /path/to/key"));
         assert!(!block.contains("ProxyJump"));
 
-        let block_jump = render_ssh_block("alias", "host", "user", 22, Path::new("/path/to/key"), Some("bastion"));
+        let block_jump = render_ssh_block(
+            "alias",
+            "host",
+            "user",
+            22,
+            Path::new("/path/to/key"),
+            Some("bastion"),
+        );
         assert!(block_jump.contains("ProxyJump bastion"));
     }
 
@@ -265,7 +285,8 @@ mod tests {
         assert!(content.contains("Host host2"));
 
         // 3. Update host1 (upsert)
-        let block1_updated = render_ssh_block("host1", "1.1.1.2", "root", 22, Path::new("/key1"), None);
+        let block1_updated =
+            render_ssh_block("host1", "1.1.1.2", "root", 22, Path::new("/key1"), None);
         upsert_managed_block(path, "host1", &block1_updated)?;
         let content = fs::read_to_string(path)?;
         assert!(content.contains("HostName 1.1.1.2"));
