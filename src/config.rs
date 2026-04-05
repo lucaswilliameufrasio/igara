@@ -46,8 +46,14 @@ impl AppPaths {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(&self.keys_dir, fs::Permissions::from_mode(0o700))
-                .with_context(|| format!("failed to set 0700 permissions on {}", self.keys_dir.display()))?;
+            fs::set_permissions(&self.keys_dir, fs::Permissions::from_mode(0o700)).with_context(
+                || {
+                    format!(
+                        "failed to set 0700 permissions on {}",
+                        self.keys_dir.display()
+                    )
+                },
+            )?;
         }
 
         Ok(())
@@ -70,7 +76,7 @@ mod tests {
     fn test_app_paths_env_and_ensure() -> Result<()> {
         let dir = tempdir()?;
         let path_str = dir.path().to_str().unwrap();
-        
+
         // Use a single test to avoid race conditions with environment variables
         unsafe {
             env::set_var("IGARA_CONFIG_DIR", path_str);

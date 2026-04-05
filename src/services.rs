@@ -1,6 +1,6 @@
+use crate::models::HostProfile;
 use color_eyre::eyre::Result;
 use tokio::process::Command;
-use crate::models::HostProfile;
 
 pub enum SharedService {
     Postgres,
@@ -18,17 +18,24 @@ impl SharedService {
     pub fn docker_command(&self) -> Vec<&str> {
         match self {
             Self::Postgres => vec![
-                "run", "-d",
-                "--name", "igara-postgres",
-                "-e", "POSTGRES_PASSWORD=postgres",
-                "-p", "5432:5432",
-                "postgres:latest"
+                "run",
+                "-d",
+                "--name",
+                "igara-postgres",
+                "-e",
+                "POSTGRES_PASSWORD=postgres",
+                "-p",
+                "5432:5432",
+                "postgres:latest",
             ],
             Self::Valkey => vec![
-                "run", "-d",
-                "--name", "igara-valkey",
-                "-p", "6379:6379",
-                "valkey/valkey:latest"
+                "run",
+                "-d",
+                "--name",
+                "igara-valkey",
+                "-p",
+                "6379:6379",
+                "valkey/valkey:latest",
             ],
         }
     }
@@ -38,10 +45,7 @@ pub async fn deploy_service(host: &HostProfile, service: SharedService) -> Resul
     let mut args = vec![host.ssh_alias.as_str(), "docker"];
     args.extend(service.docker_command());
 
-    let status = Command::new("ssh")
-        .args(args)
-        .status()
-        .await?;
+    let status = Command::new("ssh").args(args).status().await?;
 
     if !status.success() {
         color_eyre::eyre::bail!("Failed to deploy {} on {}", service.name(), host.name);

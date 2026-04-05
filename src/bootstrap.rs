@@ -121,9 +121,21 @@ mod tests {
     fn test_detect_platform_family() {
         assert_eq!(detect_platform_family("ID=arch\n"), PlatformFamily::Arch);
         assert_eq!(detect_platform_family("ID=cachyos\n"), PlatformFamily::Arch);
-        assert_eq!(detect_platform_family("ID=ubuntu\n"), PlatformFamily::Debian);
-        assert_eq!(detect_platform_family("ID=debian\n"), PlatformFamily::Debian);
-        assert_eq!(detect_platform_family("ID=fedora\n"), PlatformFamily::Fedora);
-        assert_eq!(detect_platform_family("ID=gentoo\n"), PlatformFamily::Unknown);
+        assert_eq!(
+            detect_platform_family("ID=ubuntu\n"),
+            PlatformFamily::Debian
+        );
+        assert_eq!(
+            detect_platform_family("ID=debian\n"),
+            PlatformFamily::Debian
+        );
+        assert_eq!(
+            detect_platform_family("ID=fedora\n"),
+            PlatformFamily::Fedora
+        );
+        assert_eq!(
+            detect_platform_family("ID=gentoo\n"),
+            PlatformFamily::Unknown
+        );
     }
 }

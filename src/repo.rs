@@ -3,7 +3,7 @@ use crate::models::{HostHealth, HostId, HostProfile, PlatformFamily};
 use chrono::{DateTime, Utc};
 use color_eyre::eyre::Result;
 use parking_lot::Mutex;
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{Connection, OptionalExtension, params};
 
 pub struct HostRepository {
     conn: Mutex<Connection>,
@@ -208,28 +208,40 @@ impl HostRepository {
                 is_up = excluded.is_up,
                 last_checked_at = excluded.last_checked_at
             "#,
-            params![host_id.to_string(), if is_up { 1 } else { 0 }, Utc::now().to_rfc3339()],
+            params![
+                host_id.to_string(),
+                if is_up { 1 } else { 0 },
+                Utc::now().to_rfc3339()
+            ],
         )?;
         Ok(())
     }
 
-    fn get_health_for_host(&self, conn: &Connection, host_id: &HostId) -> Result<Option<HostHealth>> {
-        let mut stmt = conn.prepare("SELECT is_up, last_checked_at FROM host_health WHERE host_id = ?1")?;
-        let row = stmt.query_row([host_id.to_string()], |row| {
-            let last_checked_at: String = row.get(1)?;
-            Ok(HostHealth {
-                host_id: host_id.clone(),
-                is_up: row.get::<_, i64>(0)? == 1,
-                last_checked_at: DateTime::parse_from_rfc3339(&last_checked_at)
-                    .expect("valid last_checked_at")
-                    .with_timezone(&Utc),
+    fn get_health_for_host(
+        &self,
+        conn: &Connection,
+        host_id: &HostId,
+    ) -> Result<Option<HostHealth>> {
+        let mut stmt =
+            conn.prepare("SELECT is_up, last_checked_at FROM host_health WHERE host_id = ?1")?;
+        let row = stmt
+            .query_row([host_id.to_string()], |row| {
+                let last_checked_at: String = row.get(1)?;
+                Ok(HostHealth {
+                    host_id: host_id.clone(),
+                    is_up: row.get::<_, i64>(0)? == 1,
+                    last_checked_at: DateTime::parse_from_rfc3339(&last_checked_at)
+                        .expect("valid last_checked_at")
+                        .with_timezone(&Utc),
+                })
             })
-        }).optional()?;
+            .optional()?;
         Ok(row)
     }
 
     fn tags_for_host_with_conn(&self, conn: &Connection, host_id: &HostId) -> Result<Vec<String>> {
-        let mut stmt = conn.prepare("SELECT tag FROM host_tags WHERE host_id = ?1 ORDER BY tag ASC")?;
+        let mut stmt =
+            conn.prepare("SELECT tag FROM host_tags WHERE host_id = ?1 ORDER BY tag ASC")?;
         let rows = stmt.query_map([host_id.to_string()], |row| row.get::<_, String>(0))?;
         let mut tags = Vec::new();
         for row in rows {

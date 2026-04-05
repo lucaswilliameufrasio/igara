@@ -64,10 +64,7 @@ pub fn use_context(name: &str) -> Result<()> {
 
 pub fn run_docker_command(ssh_alias: &str, args: &[&str]) -> Result<()> {
     let host = format!("ssh://{ssh_alias}");
-    let mut cmd_args = vec![
-        "-H",
-        &host,
-    ];
+    let mut cmd_args = vec!["-H", &host];
     cmd_args.extend(args);
 
     let status = Command::new("docker")

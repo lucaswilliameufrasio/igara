@@ -63,7 +63,8 @@ async fn main() -> Result<()> {
                 repo.insert_host(&host)?;
 
                 if args.install_key {
-                    ssh::install_public_key(&host.ssh_alias, &key_path.with_extension("pub")).await?;
+                    ssh::install_public_key(&host.ssh_alias, &key_path.with_extension("pub"))
+                        .await?;
                 }
                 if args.create_docker_context {
                     docker::create_context(&host.docker_context_name, &host.ssh_alias)?;
@@ -74,7 +75,13 @@ async fn main() -> Result<()> {
             HostCommands::List => {
                 for host in repo.list_hosts()? {
                     let health_status = match host.health {
-                        Some(h) => if h.is_up { "UP" } else { "DOWN" },
+                        Some(h) => {
+                            if h.is_up {
+                                "UP"
+                            } else {
+                                "DOWN"
+                            }
+                        }
                         None => "UNKNOWN",
                     };
                     println!(
@@ -115,7 +122,9 @@ async fn main() -> Result<()> {
                         println!("Bootstrapping {}...", host.name);
                         match bootstrap::inspect(&host.ssh_alias).await {
                             Ok(result) => {
-                                if let Err(e) = bootstrap::apply(&host.ssh_alias, result.platform_family).await {
+                                if let Err(e) =
+                                    bootstrap::apply(&host.ssh_alias, result.platform_family).await
+                                {
                                     eprintln!("Failed to bootstrap {}: {}", host.name, e);
                                 } else {
                                     println!("Bootstrap successful for {}", host.name);
@@ -148,7 +157,11 @@ async fn main() -> Result<()> {
             }
             SshCommands::InstallKey { alias } => {
                 let host = repo.get_host_by_name(&alias)?;
-                ssh::install_public_key(&host.ssh_alias, &std::path::PathBuf::from(&host.ssh_key_path).with_extension("pub")).await?;
+                ssh::install_public_key(
+                    &host.ssh_alias,
+                    &std::path::PathBuf::from(&host.ssh_key_path).with_extension("pub"),
+                )
+                .await?;
                 println!("Public key installed on {}", alias);
             }
             SshCommands::RenderConfig { alias } => {
