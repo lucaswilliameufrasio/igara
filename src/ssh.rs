@@ -170,6 +170,63 @@ pub async fn install_public_key(alias: &str, pub_key_path: &Path) -> Result<()> 
     Ok(())
 }
 
+pub async fn push_binary(alias: &str, local_path: &Path, remote_dest: &str) -> Result<()> {
+    if !local_path.exists() {
+        bail!("local binary not found at {}", local_path.display());
+    }
+
+    let binary_name = local_path.file_name()
+        .and_then(|n| n.to_str())
+        .ok_or_else(|| color_eyre::eyre::eyre!("invalid binary path"))?;
+
+    // Create a tar archive of the binary and pipe it to the remote host
+    let remote_cmd = format!("mkdir -p $(dirname {remote_dest}) && tar -x -C $(dirname {remote_dest})");
+    
+    let mut child = Command::new("ssh")
+        .arg(alias)
+        .arg(remote_cmd)
+        .stdin(Stdio::piped())
+        .spawn()
+        .context("failed to spawn ssh for binary transfer")?;
+
+    let mut stdin = child.stdin.take().expect("failed to open stdin");
+    
+    // Run tar locally to archive the binary (async)
+    let mut local_tar = Command::new("tar")
+        .arg("-c")
+        .arg("-C")
+        .arg(local_path.parent().unwrap_or(Path::new(".")))
+        .arg(binary_name)
+        .stdout(Stdio::piped())
+        .spawn()
+        .context("failed to run local tar")?;
+
+    if let Some(mut local_stdout) = local_tar.stdout.take() {
+        tokio::io::copy(&mut local_stdout, &mut stdin).await?;
+    }
+    
+    drop(stdin);
+    let status = child.wait().await?;
+    let _ = local_tar.wait().await?;
+
+    if !status.success() {
+        bail!("binary transfer failed for host alias '{alias}'");
+    }
+
+    // Ensure it's executable on the other side
+    let chmod_status = Command::new("ssh")
+        .arg(alias)
+        .arg(format!("chmod +x {remote_dest}"))
+        .status()
+        .await?;
+
+    if !chmod_status.success() {
+        bail!("failed to set executable permissions on remote host");
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
