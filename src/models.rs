@@ -14,6 +14,12 @@ impl HostId {
     }
 }
 
+impl Default for HostId {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Display for HostId {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         self.0.fmt(f)

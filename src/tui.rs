@@ -234,3 +234,93 @@ fn restore_terminal(mut terminal: Terminal<CrosstermBackend<Stdout>>) -> Result<
     terminal.show_cursor()?;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::run_migrations;
+    use crate::models::{ConnectionMode, CreateHostOptions};
+    use crate::repo::HostRepository;
+    use rusqlite::Connection;
+
+    fn setup_repo() -> Arc<HostRepository> {
+        let mut conn = Connection::open_in_memory().unwrap();
+        conn.execute("PRAGMA foreign_keys = ON", []).unwrap();
+        run_migrations(&mut conn).unwrap();
+        Arc::new(HostRepository::new(conn))
+    }
+
+    fn make_host(name: &str) -> HostProfile {
+        HostProfile::new(CreateHostOptions {
+            name: name.to_string(),
+            hostname: format!("{}.example.com", name),
+            user_name: "root".to_string(),
+            port: 22,
+            connection_mode: ConnectionMode::Lan,
+            proxy_jump: None,
+            ssh_key_path: format!("/tmp/{}", name),
+            tags: vec![],
+        })
+    }
+
+    #[test]
+    fn test_app_new_empty() {
+        let app = App::new(vec![], setup_repo());
+        assert!(app.hosts.is_empty());
+        assert!(app.table_state.selected().is_none());
+    }
+
+    #[test]
+    fn test_app_new_selects_first() {
+        let hosts = vec![make_host("alpha"), make_host("beta")];
+        let app = App::new(hosts, setup_repo());
+        assert_eq!(app.table_state.selected(), Some(0));
+        assert_eq!(app.selected_host().unwrap().name, "alpha");
+    }
+
+    #[test]
+    fn test_app_navigation_cycles_forward() {
+        let hosts = vec![make_host("a"), make_host("b"), make_host("c")];
+        let mut app = App::new(hosts, setup_repo());
+
+        assert_eq!(app.selected_host().unwrap().name, "a");
+        app.next();
+        assert_eq!(app.selected_host().unwrap().name, "b");
+        app.next();
+        assert_eq!(app.selected_host().unwrap().name, "c");
+        app.next();
+        assert_eq!(app.selected_host().unwrap().name, "a");
+    }
+
+    #[test]
+    fn test_app_navigation_cycles_backward() {
+        let hosts = vec![make_host("a"), make_host("b"), make_host("c")];
+        let mut app = App::new(hosts, setup_repo());
+
+        app.previous();
+        assert_eq!(app.selected_host().unwrap().name, "c");
+        app.previous();
+        assert_eq!(app.selected_host().unwrap().name, "b");
+        app.previous();
+        assert_eq!(app.selected_host().unwrap().name, "a");
+    }
+
+    #[test]
+    fn test_app_navigation_single_host() {
+        let hosts = vec![make_host("only")];
+        let mut app = App::new(hosts, setup_repo());
+
+        assert_eq!(app.selected_host().unwrap().name, "only");
+        app.next();
+        assert_eq!(app.selected_host().unwrap().name, "only");
+        app.previous();
+        assert_eq!(app.selected_host().unwrap().name, "only");
+    }
+
+    #[test]
+    fn test_app_status_default() {
+        let app = App::new(vec![], setup_repo());
+        assert!(app.status.contains("Arrows"));
+        assert!(app.status.contains("q: quit"));
+    }
+}

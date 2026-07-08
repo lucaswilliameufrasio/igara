@@ -1,21 +1,10 @@
-mod bootstrap;
-mod cli;
-mod config;
-mod db;
-mod docker;
-mod errors;
-mod models;
-mod repo;
-mod services;
-mod ssh;
-mod tui;
-
 use clap::Parser;
-use cli::{BootstrapCommands, Cli, Commands, DockerCommands, HostCommands, SshCommands};
 use color_eyre::eyre::Result;
-use config::AppPaths;
-use models::{ConnectionMode, CreateHostOptions, HostProfile};
-use repo::HostRepository;
+use igara::cli::{BootstrapCommands, Cli, Commands, DockerCommands, HostCommands, SshCommands};
+use igara::config::AppPaths;
+use igara::models::{ConnectionMode, CreateHostOptions, HostProfile};
+use igara::repo::HostRepository;
+use igara::{bootstrap, db, docker, ssh, tui};
 use std::sync::Arc;
 use tracing_subscriber::EnvFilter;
 

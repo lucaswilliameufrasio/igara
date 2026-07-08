@@ -1,6 +1,11 @@
 use color_eyre::eyre::{Context, Result, bail};
 use std::process::Command;
 
+#[cfg(test)]
+fn docker_in_path() -> bool {
+    which::which("docker").is_ok()
+}
+
 pub fn context_exists(name: &str) -> Result<bool> {
     let output = Command::new("docker")
         .args(["context", "inspect", name])
@@ -77,4 +82,53 @@ pub fn run_docker_command(ssh_alias: &str, args: &[&str]) -> Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_context_exists_returns_false_for_nonexistent() {
+        if !docker_in_path() {
+            eprintln!("skipping: docker not found in PATH");
+            return;
+        }
+        let result = context_exists("igara-test-nonexistent-ctx-do-not-use").unwrap();
+        assert!(!result);
+    }
+
+    #[test]
+    fn test_create_and_remove_context_idempotent() {
+        if !docker_in_path() {
+            eprintln!("skipping: docker not found in PATH");
+            return;
+        }
+        let name = format!("igara-test-{}", uuid7::uuid7());
+
+        assert!(
+            !context_exists(&name).unwrap(),
+            "context should not exist yet"
+        );
+
+        create_context(&name, "igara-test-nonexistent-host").unwrap();
+        assert!(
+            context_exists(&name).unwrap(),
+            "context should exist after create"
+        );
+
+        // Idempotent: creating again is a no-op
+        create_context(&name, "igara-test-nonexistent-host").unwrap();
+        assert!(context_exists(&name).unwrap());
+
+        remove_context(&name).unwrap();
+        assert!(
+            !context_exists(&name).unwrap(),
+            "context should be gone after remove"
+        );
+
+        // Idempotent: removing again is a no-op
+        remove_context(&name).unwrap();
+        assert!(!context_exists(&name).unwrap());
+    }
 }
