@@ -89,10 +89,10 @@ async fn main() -> Result<()> {
             }
             HostCommands::Remove { name } => {
                 let host = repo.get_host_by_name(&name)?;
+                docker::remove_context(&host.docker_context_name)?;
+                ssh::remove_managed_block(&paths.ssh_config_path()?, &host.ssh_alias)?;
                 let removed = repo.delete_host(&name)?;
                 if removed {
-                    let _ = docker::remove_context(&host.docker_context_name);
-                    let _ = ssh::remove_managed_block(&paths.ssh_config_path()?, &host.ssh_alias);
                     println!("Host {} removed", host.name);
                 }
             }

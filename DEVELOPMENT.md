@@ -9,6 +9,14 @@ This document provides guidelines for developing and maintaining Igará.
 - `docker` CLI (optional, needed for Docker context features)
 - `ssh` client (optional, needed for remote host operations)
 
+## Setup
+
+Install the development tooling (nextest, cargo-watch, coverage/size tools):
+
+```bash
+make setup
+```
+
 ## Quick start
 
 ```bash
@@ -24,20 +32,22 @@ cargo run -- host add --name my-host --hostname 10.0.0.1 --user root
 
 ## Testing
 
-### Run all tests
+### Run all tests (nextest)
 
 ```bash
-cargo test
+make test
+# or
+cargo nextest run
 ```
 
 Watch mode (requires `cargo-watch`):
 ```bash
-cargo watch -x test
+make test-watch
 ```
 
 Show output:
 ```bash
-cargo test -- --nocapture
+make test-nocapture
 ```
 
 ### Test structure

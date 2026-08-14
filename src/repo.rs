@@ -1,9 +1,37 @@
 use crate::errors::IgaraError;
-use crate::models::{HostHealth, HostId, HostProfile, PlatformFamily};
+use crate::models::{ConnectionMode, HostHealth, HostId, HostProfile, PlatformFamily};
 use chrono::{DateTime, Utc};
 use color_eyre::eyre::Result;
 use parking_lot::Mutex;
 use rusqlite::{Connection, OptionalExtension, params};
+
+fn parse_connection_mode(value: &str) -> rusqlite::Result<ConnectionMode> {
+    value.parse().map_err(|_| {
+        rusqlite::Error::FromSqlConversionFailure(
+            5,
+            rusqlite::types::Type::Text,
+            Box::new(IgaraError::InvalidConnectionMode(value.to_string())),
+        )
+    })
+}
+
+fn parse_platform_family(value: &str) -> rusqlite::Result<PlatformFamily> {
+    value.parse().map_err(|_| {
+        rusqlite::Error::FromSqlConversionFailure(
+            6,
+            rusqlite::types::Type::Text,
+            Box::new(IgaraError::InvalidPlatformFamily(value.to_string())),
+        )
+    })
+}
+
+fn parse_timestamp(value: &str) -> rusqlite::Result<DateTime<Utc>> {
+    DateTime::parse_from_rfc3339(value)
+        .map(|dt| dt.with_timezone(&Utc))
+        .map_err(|err| {
+            rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(err))
+        })
+}
 
 pub struct HostRepository {
     conn: Mutex<Connection>,
@@ -84,12 +112,11 @@ impl HostRepository {
                 hostname: row.get(2)?,
                 user_name: row.get(3)?,
                 port: row.get(4)?,
-                connection_mode: connection_mode.parse().expect("valid connection mode"),
-                platform_family: platform_family.map(|value| {
-                    value
-                        .parse::<PlatformFamily>()
-                        .expect("valid platform family")
-                }),
+                connection_mode: parse_connection_mode(&connection_mode)?,
+                platform_family: match platform_family {
+                    Some(value) => Some(parse_platform_family(&value)?),
+                    None => None,
+                },
                 proxy_jump,
                 ssh_alias: row.get(8)?,
                 ssh_key_path: row.get(9)?,
@@ -97,12 +124,8 @@ impl HostRepository {
                 is_default: row.get::<_, i64>(11)? == 1,
                 tags: Vec::new(),
                 health: None,
-                created_at: DateTime::parse_from_rfc3339(&created_at)
-                    .expect("valid created_at")
-                    .with_timezone(&Utc),
-                updated_at: DateTime::parse_from_rfc3339(&updated_at)
-                    .expect("valid updated_at")
-                    .with_timezone(&Utc),
+                created_at: parse_timestamp(&created_at)?,
+                updated_at: parse_timestamp(&updated_at)?,
             })
         })?;
 
@@ -145,8 +168,11 @@ impl HostRepository {
                     hostname: row.get(2)?,
                     user_name: row.get(3)?,
                     port: row.get(4)?,
-                    connection_mode: connection_mode.parse().expect("valid connection mode"),
-                    platform_family: platform_family.map(|v| v.parse().expect("valid family")),
+                    connection_mode: parse_connection_mode(&connection_mode)?,
+                    platform_family: match platform_family {
+                        Some(value) => Some(parse_platform_family(&value)?),
+                        None => None,
+                    },
                     proxy_jump,
                     ssh_alias: row.get(8)?,
                     ssh_key_path: row.get(9)?,
@@ -154,12 +180,8 @@ impl HostRepository {
                     is_default: row.get::<_, i64>(11)? == 1,
                     tags: Vec::new(),
                     health: None,
-                    created_at: DateTime::parse_from_rfc3339(&created_at)
-                        .expect("valid created_at")
-                        .with_timezone(&Utc),
-                    updated_at: DateTime::parse_from_rfc3339(&updated_at)
-                        .expect("valid updated_at")
-                        .with_timezone(&Utc),
+                    created_at: parse_timestamp(&created_at)?,
+                    updated_at: parse_timestamp(&updated_at)?,
                 })
             })
             .optional()?;
@@ -230,9 +252,7 @@ impl HostRepository {
                 Ok(HostHealth {
                     host_id: host_id.clone(),
                     is_up: row.get::<_, i64>(0)? == 1,
-                    last_checked_at: DateTime::parse_from_rfc3339(&last_checked_at)
-                        .expect("valid last_checked_at")
-                        .with_timezone(&Utc),
+                    last_checked_at: parse_timestamp(&last_checked_at)?,
                 })
             })
             .optional()?;
@@ -262,6 +282,49 @@ mod tests {
         conn.execute("PRAGMA foreign_keys = ON", []).unwrap();
         run_migrations(&mut conn).unwrap();
         conn
+    }
+
+    #[test]
+    fn test_parse_connection_mode() {
+        assert_eq!(parse_connection_mode("lan").unwrap(), ConnectionMode::Lan);
+        assert_eq!(
+            parse_connection_mode("tailscale").unwrap(),
+            ConnectionMode::Tailscale
+        );
+        assert_eq!(
+            parse_connection_mode("public").unwrap(),
+            ConnectionMode::Public
+        );
+        assert!(parse_connection_mode("bogus").is_err());
+    }
+
+    #[test]
+    fn test_parse_platform_family() {
+        assert_eq!(parse_platform_family("arch").unwrap(), PlatformFamily::Arch);
+        assert_eq!(
+            parse_platform_family("debian").unwrap(),
+            PlatformFamily::Debian
+        );
+        assert_eq!(
+            parse_platform_family("fedora").unwrap(),
+            PlatformFamily::Fedora
+        );
+        assert_eq!(
+            parse_platform_family("unknown").unwrap(),
+            PlatformFamily::Unknown
+        );
+        assert!(parse_platform_family("bogus").is_err());
+    }
+
+    #[test]
+    fn test_parse_timestamp() {
+        assert_eq!(
+            parse_timestamp("2026-08-13T09:33:27.123456+00:00")
+                .unwrap()
+                .to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+            "2026-08-13T09:33:27Z"
+        );
+        assert!(parse_timestamp("not-a-date").is_err());
     }
 
     #[test]

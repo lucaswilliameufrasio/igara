@@ -1,4 +1,10 @@
-.PHONY: format lint lint-format test test-nocapture test-watch build build-release clean
+.PHONY: setup format lint lint-format test test-nocapture test-watch test-all build build-release clean
+
+setup:
+	cargo install cargo-nextest --locked
+	cargo install cargo-watch --locked
+	cargo install cargo-binstall --locked
+	cargo binstall --no-confirm cargo-tarpaulin cargo-llvm-cov cargo-bloat 2>/dev/null || true
 
 format:
 	cargo fmt --all
@@ -9,16 +15,16 @@ lint:
 lint-format: format lint
 
 test:
-	cargo test
+	cargo nextest run
 
 test-nocapture:
-	cargo test -- --nocapture
+	cargo nextest run -- --nocapture
 
 test-watch:
-	cargo watch -x test
+	cargo watch -x "nextest run"
 
 test-all:
-	cargo test --all-features
+	cargo nextest run --all-features
 
 build:
 	cargo build

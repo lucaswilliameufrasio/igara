@@ -158,10 +158,7 @@ pub async fn install_public_key(host: &HostProfile, pub_key_path: &Path) -> Resu
         for arg in &connect_args {
             cmd.arg(arg);
         }
-        let status = cmd
-            .status()
-            .await
-            .context("failed to spawn ssh-copy-id")?;
+        let status = cmd.status().await.context("failed to spawn ssh-copy-id")?;
         if !status.success() {
             bail!("ssh-copy-id failed for host '{}'", host.name);
         }
@@ -183,7 +180,10 @@ pub async fn install_public_key(host: &HostProfile, pub_key_path: &Path) -> Resu
         .spawn()
         .context("failed to spawn ssh for public key installation")?;
 
-    let mut stdin = child.stdin.take().expect("failed to open stdin");
+    let mut stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| color_eyre::eyre::eyre!("failed to open stdin for ssh process"))?;
     stdin.write_all(public_key.trim().as_bytes()).await?;
     drop(stdin);
 
@@ -221,7 +221,10 @@ pub async fn push_binary(alias: &str, local_path: &Path, remote_dest: &str) -> R
         .spawn()
         .context("failed to spawn ssh for binary transfer")?;
 
-    let mut stdin = child.stdin.take().expect("failed to open stdin");
+    let mut stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| color_eyre::eyre::eyre!("failed to open stdin for ssh process"))?;
 
     // Run tar locally to archive the binary (async)
     let mut local_tar = Command::new("tar")
