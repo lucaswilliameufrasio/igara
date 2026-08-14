@@ -29,11 +29,6 @@ pub fn create_context(name: &str, ssh_alias: &str) -> Result<()> {
         bail!("docker context create failed for '{name}'");
     }
 
-    // Also setup a buildx builder for this context to offload builds
-    let _ = Command::new("docker")
-        .args(["buildx", "create", "--name", name, "--use", name])
-        .status();
-
     Ok(())
 }
 

@@ -52,8 +52,7 @@ async fn main() -> Result<()> {
                 repo.insert_host(&host)?;
 
                 if args.install_key {
-                    ssh::install_public_key(&host.ssh_alias, &key_path.with_extension("pub"))
-                        .await?;
+                    ssh::install_public_key(&host, &key_path.with_extension("pub")).await?;
                 }
                 if args.create_docker_context {
                     docker::create_context(&host.docker_context_name, &host.ssh_alias)?;
@@ -147,7 +146,7 @@ async fn main() -> Result<()> {
             SshCommands::InstallKey { alias } => {
                 let host = repo.get_host_by_name(&alias)?;
                 ssh::install_public_key(
-                    &host.ssh_alias,
+                    &host,
                     &std::path::PathBuf::from(&host.ssh_key_path).with_extension("pub"),
                 )
                 .await?;

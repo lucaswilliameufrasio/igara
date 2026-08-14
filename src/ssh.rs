@@ -1,4 +1,5 @@
 use crate::config::AppPaths;
+use crate::models::HostProfile;
 use color_eyre::eyre::{Context, Result, bail};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -38,7 +39,7 @@ pub fn render_ssh_block(
     proxy_jump: Option<&str>,
 ) -> String {
     let mut block = format!(
-        "# >>> igara managed: {alias} >>>\nHost {alias}\n  HostName {hostname}\n  User {user}\n  Port {port}\n  IdentityFile {}\n  IdentitiesOnly yes\n  ServerAliveInterval 30\n  ServerAliveCountMax 120\n  TCPKeepAlive yes\n",
+        "# >>> igara managed: {alias} >>>\nHost {alias}\n  HostName {hostname}\n  User {user}\n  Port {port}\n  IdentityFile \"{}\"\n  IdentitiesOnly yes\n  ServerAliveInterval 30\n  ServerAliveCountMax 120\n  TCPKeepAlive yes\n",
         key_path.display()
     );
 
@@ -134,17 +135,35 @@ pub async fn test_ssh(alias: &str) -> Result<()> {
     Ok(())
 }
 
-pub async fn install_public_key(alias: &str, pub_key_path: &Path) -> Result<()> {
+pub fn ssh_connect_args(host: &HostProfile) -> Vec<String> {
+    let mut args = Vec::new();
+    if host.port != 22 {
+        args.push("-p".to_string());
+        args.push(host.port.to_string());
+    }
+    if let Some(jump) = &host.proxy_jump {
+        args.push("-o".to_string());
+        args.push(format!("ProxyJump={jump}"));
+    }
+    args.push(format!("{}@{}", host.user_name, host.hostname));
+    args
+}
+
+pub async fn install_public_key(host: &HostProfile, pub_key_path: &Path) -> Result<()> {
+    let connect_args = ssh_connect_args(host);
+
     if which::which("ssh-copy-id").is_ok() {
-        let status = Command::new("ssh-copy-id")
-            .arg("-i")
-            .arg(pub_key_path)
-            .arg(alias)
+        let mut cmd = Command::new("ssh-copy-id");
+        cmd.arg("-i").arg(pub_key_path);
+        for arg in &connect_args {
+            cmd.arg(arg);
+        }
+        let status = cmd
             .status()
             .await
             .context("failed to spawn ssh-copy-id")?;
         if !status.success() {
-            bail!("ssh-copy-id failed for host alias '{alias}'");
+            bail!("ssh-copy-id failed for host '{}'", host.name);
         }
         return Ok(());
     }
@@ -156,7 +175,7 @@ pub async fn install_public_key(alias: &str, pub_key_path: &Path) -> Result<()> 
     let remote_cmd = "mkdir -p ~/.ssh && chmod 700 ~/.ssh && PK=\"$(cat)\"; grep -qxF \"$PK\" ~/.ssh/authorized_keys || echo \"$PK\" >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys";
 
     let mut child = Command::new("ssh")
-        .arg(alias)
+        .args(&connect_args)
         .arg("bash")
         .arg("-c")
         .arg(remote_cmd)
@@ -174,7 +193,7 @@ pub async fn install_public_key(alias: &str, pub_key_path: &Path) -> Result<()> 
         .context("failed to wait for ssh child process")?;
 
     if !status.success() {
-        bail!("failed to install public key on host alias '{alias}'");
+        bail!("failed to install public key on host '{}'", host.name);
     }
 
     Ok(())
@@ -243,6 +262,7 @@ pub async fn push_binary(alias: &str, local_path: &Path, remote_dest: &str) -> R
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::models::{ConnectionMode, CreateHostOptions};
     use tempfile::NamedTempFile;
 
     #[test]
@@ -252,7 +272,7 @@ mod tests {
         assert!(block.contains("HostName host"));
         assert!(block.contains("User user"));
         assert!(block.contains("Port 22"));
-        assert!(block.contains("IdentityFile /path/to/key"));
+        assert!(block.contains("IdentityFile \"/path/to/key\""));
         assert!(!block.contains("ProxyJump"));
 
         let block_jump = render_ssh_block(
@@ -264,6 +284,52 @@ mod tests {
             Some("bastion"),
         );
         assert!(block_jump.contains("ProxyJump bastion"));
+    }
+
+    fn test_host(port: u16, proxy_jump: Option<&str>) -> HostProfile {
+        HostProfile::new(CreateHostOptions {
+            name: "test-host".to_string(),
+            hostname: "host.example.com".to_string(),
+            user_name: "user".to_string(),
+            port,
+            connection_mode: ConnectionMode::Public,
+            proxy_jump: proxy_jump.map(str::to_string),
+            ssh_key_path: "/key".to_string(),
+            tags: vec![],
+        })
+    }
+
+    #[test]
+    fn test_ssh_connect_args() {
+        let host_default = test_host(22, None);
+        assert_eq!(
+            ssh_connect_args(&host_default),
+            vec!["user@host.example.com"]
+        );
+
+        let host_custom_port = test_host(2222, None);
+        assert_eq!(
+            ssh_connect_args(&host_custom_port),
+            vec!["-p", "2222", "user@host.example.com"]
+        );
+
+        let host_jump = test_host(22, Some("bastion"));
+        assert_eq!(
+            ssh_connect_args(&host_jump),
+            vec!["-o", "ProxyJump=bastion", "user@host.example.com"]
+        );
+
+        let host_full = test_host(2222, Some("bastion"));
+        assert_eq!(
+            ssh_connect_args(&host_full),
+            vec![
+                "-p",
+                "2222",
+                "-o",
+                "ProxyJump=bastion",
+                "user@host.example.com"
+            ]
+        );
     }
 
     #[tokio::test]
