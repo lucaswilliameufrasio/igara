@@ -1,4 +1,4 @@
-.PHONY: setup format lint lint-format test test-nocapture test-watch test-all build build-release clean
+.PHONY: setup format lint check lint-format test test-nocapture test-watch test-all build build-release clean
 
 setup:
 	cargo install cargo-nextest --locked
@@ -11,6 +11,11 @@ format:
 
 lint:
 	cargo clippy --all-targets --all-features -- -D warnings
+
+check:
+	cargo fmt --all -- --check
+	cargo clippy --all-targets --all-features -- -D warnings
+	cargo nextest run --all-features
 
 lint-format: format lint
 
