@@ -26,12 +26,12 @@ jobs:
             target: x86_64-pc-windows-msvc
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7.0.1
       - uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: 1.94.0
+          toolchain: 1.99.1
           target: ${{ matrix.target }}
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@v2.9.3
       - name: Install cross for Linux cross-compilation
         if: runner.os == 'Linux'
         run: cargo install cross --git https://github.com/cross-rs/cross
@@ -49,14 +49,14 @@ jobs:
           VERSION: ${{ github.ref_name }}
         run: ./scripts/package.sh "${{ matrix.target }}"
       - name: Upload workflow artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7.0.2
         with:
           name: ${{ matrix.target }}
           path: |
             dist/*.tar.gz
             dist/*.zip
       - name: Publish release assets
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3.0.3
         with:
           files: |
             dist/*.tar.gz

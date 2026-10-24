@@ -4,10 +4,11 @@ This document provides guidelines for developing and maintaining Igará.
 
 ## Prerequisites
 
-- Rust 1.94.0 (pinned in `rust-toolchain.toml`, auto-installed by `rustup`)
+- Rust 1.99.1 (pinned in `rust-toolchain.toml`, auto-installed by `rustup`)
 - `ssh-keygen` (OpenSSH client tools)
 - `docker` CLI (optional, needed for Docker context features)
 - `ssh` client (optional, needed for remote host operations)
+- `tar` on the workstation and remote Linux host (needed for remote builds)
 
 ## Setup
 
@@ -152,7 +153,7 @@ The project uses GitHub Actions with two workflows:
 ## Project structure
 
 ```
-src/
+  src/
   main.rs       – entry point, CLI dispatcher
   lib.rs        – crate root, re-exports all modules
   cli.rs        – clap argument definitions
@@ -163,6 +164,7 @@ src/
   ssh.rs        – SSH keygen, config management, remote commands
   docker.rs     – Docker context management
   bootstrap.rs  – remote host inspection + package install
+  build.rs      – remote project source transfer and build execution
   services.rs   – shared infra deploy (Postgres, Valkey)
   tui.rs        – Ratatui terminal dashboard
   errors.rs     – error types
