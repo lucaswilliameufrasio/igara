@@ -29,7 +29,16 @@ pub enum Commands {
         command: BootstrapCommands,
     },
     Build(BuildArgs),
+    Mcp {
+        #[command(subcommand)]
+        command: McpCommands,
+    },
     Tui,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum McpCommands {
+    Serve,
 }
 
 #[derive(Debug, Args)]
@@ -140,5 +149,17 @@ mod tests {
         let result = Cli::try_parse_from(["igara", "build", "beefy"]);
 
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn mcp_serve_command_is_available() {
+        let cli = Cli::try_parse_from(["igara", "mcp", "serve"]).unwrap();
+
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Mcp {
+                command: McpCommands::Serve
+            })
+        ));
     }
 }

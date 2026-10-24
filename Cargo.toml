@@ -16,6 +16,7 @@ directories = "6.0.0"
 futures = "0.3.34"
 parking_lot = "0.13.0"
 ratatui = "0.30.2"
+rmcp = { version = "3.7.0", default-features = false, features = ["server", "macros", "transport-io"] }
 rusqlite = { version = "0.40.2", features = ["bundled", "chrono", "serde_json"] }
 rusqlite_migration = "2.6.0"
 serde = { version = "1.0.229", features = ["derive"] }

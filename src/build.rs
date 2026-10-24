@@ -39,12 +39,46 @@ const DEFAULT_EXCLUDES: &[&str] = &[
     "*.jks",
 ];
 
+#[derive(Clone, Copy)]
+pub(crate) enum BuildOutput {
+    Inherit,
+    Stderr,
+}
+
+impl BuildOutput {
+    fn transfer_stdout(self) -> Stdio {
+        match self {
+            Self::Inherit => Stdio::inherit(),
+            Self::Stderr => Stdio::null(),
+        }
+    }
+}
+
 pub async fn build_project(
     ssh_alias: &str,
     source: &Path,
     command: &[String],
     excludes: &[String],
     keep: bool,
+) -> Result<Option<String>> {
+    build_project_with_output(
+        ssh_alias,
+        source,
+        command,
+        excludes,
+        keep,
+        BuildOutput::Inherit,
+    )
+    .await
+}
+
+pub(crate) async fn build_project_with_output(
+    ssh_alias: &str,
+    source: &Path,
+    command: &[String],
+    excludes: &[String],
+    keep: bool,
+    output: BuildOutput,
 ) -> Result<Option<String>> {
     if command.is_empty() {
         bail!("a build command is required after '--'");
@@ -60,16 +94,15 @@ pub async fn build_project(
     let build_id = uuid7::uuid7().to_string();
     let remote_path = format!("~/.cache/igara/builds/{build_id}");
 
-    if let Err(error) = transfer_source(ssh_alias, &source, &build_id, excludes).await {
-        let _ = cleanup_remote_workspace(ssh_alias, &build_id).await;
+    if let Err(error) = transfer_source(ssh_alias, &source, &build_id, excludes, output).await {
+        let _ = cleanup_remote_workspace(ssh_alias, &build_id, output).await;
         return Err(error);
     }
 
     let remote_command = render_remote_build_command(&build_id, command, keep);
-    let status = Command::new("ssh")
-        .arg(ssh_alias)
-        .arg(remote_command)
-        .status()
+    let mut remote_build = Command::new("ssh");
+    remote_build.arg(ssh_alias).arg(remote_command);
+    let status = run_command(remote_build, output)
         .await
         .context("failed to start remote build over SSH");
 
@@ -77,7 +110,7 @@ pub async fn build_project(
         Ok(status) => status,
         Err(error) => {
             if !keep {
-                let _ = cleanup_remote_workspace(ssh_alias, &build_id).await;
+                let _ = cleanup_remote_workspace(ssh_alias, &build_id, output).await;
             }
             return Err(error);
         }
@@ -102,6 +135,7 @@ async fn transfer_source(
     source: &Path,
     build_id: &str,
     excludes: &[String],
+    output: BuildOutput,
 ) -> Result<()> {
     let remote_script = format!(
         "set -eu\n\
@@ -115,6 +149,7 @@ async fn transfer_source(
     let mut ssh = Command::new("ssh")
         .arg(ssh_alias)
         .arg(remote_sh_command(&remote_script))
+        .stdout(output.transfer_stdout())
         .stdin(Stdio::piped())
         .spawn()
         .context("failed to start SSH source transfer")?;
@@ -195,7 +230,11 @@ fn spawn_tar(source: &Path, excludes: &[String]) -> Result<Child> {
         .context("failed to start tar; install a tar implementation to build remotely")
 }
 
-async fn cleanup_remote_workspace(ssh_alias: &str, build_id: &str) -> Result<()> {
+async fn cleanup_remote_workspace(
+    ssh_alias: &str,
+    build_id: &str,
+    output: BuildOutput,
+) -> Result<()> {
     let remote_script = format!(
         "workdir=\"$HOME/.cache/igara/builds/{build_id}\"\n\
          rm -rf -- \"$workdir\""
@@ -203,6 +242,7 @@ async fn cleanup_remote_workspace(ssh_alias: &str, build_id: &str) -> Result<()>
     let status = Command::new("ssh")
         .arg(ssh_alias)
         .arg(remote_sh_command(&remote_script))
+        .stdout(output.transfer_stdout())
         .status()
         .await
         .context("failed to clean up the incomplete remote build workspace")?;
@@ -212,6 +252,38 @@ async fn cleanup_remote_workspace(ssh_alias: &str, build_id: &str) -> Result<()>
     }
 
     Ok(())
+}
+
+async fn run_command(
+    mut command: Command,
+    output: BuildOutput,
+) -> Result<std::process::ExitStatus> {
+    match output {
+        BuildOutput::Inherit => command.status().await.context("failed to run command"),
+        BuildOutput::Stderr => {
+            let mut child = command
+                .stdout(Stdio::piped())
+                .spawn()
+                .context("failed to start command")?;
+            let Some(mut stdout) = child.stdout.take() else {
+                let _ = child.kill().await;
+                let _ = child.wait().await;
+                bail!("failed to capture command stdout");
+            };
+
+            let mut stderr = io::stderr();
+            if let Err(error) = io::copy(&mut stdout, &mut stderr).await {
+                let _ = child.kill().await;
+                let _ = child.wait().await;
+                return Err(error).context("failed to forward remote build output to stderr");
+            }
+
+            child
+                .wait()
+                .await
+                .context("failed while waiting for command")
+        }
+    }
 }
 
 fn render_remote_build_command(build_id: &str, command: &[String], keep: bool) -> String {

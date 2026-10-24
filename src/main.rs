@@ -1,10 +1,12 @@
 use clap::Parser;
 use color_eyre::eyre::Result;
-use igara::cli::{BootstrapCommands, Cli, Commands, DockerCommands, HostCommands, SshCommands};
+use igara::cli::{
+    BootstrapCommands, Cli, Commands, DockerCommands, HostCommands, McpCommands, SshCommands,
+};
 use igara::config::AppPaths;
 use igara::models::{ConnectionMode, CreateHostOptions, HostProfile};
 use igara::repo::HostRepository;
-use igara::{bootstrap, build, db, docker, ssh, tui};
+use igara::{bootstrap, build, db, docker, mcp, ssh, tui};
 use std::sync::Arc;
 use tracing_subscriber::EnvFilter;
 
@@ -15,6 +17,7 @@ async fn main() -> Result<()> {
         .with_env_filter(
             EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
         )
+        .with_writer(std::io::stderr)
         .init();
 
     let cli = Cli::parse();
@@ -206,6 +209,9 @@ async fn main() -> Result<()> {
                 println!("Remote workspace retained at {path}");
             }
         }
+        Some(Commands::Mcp { command }) => match command {
+            McpCommands::Serve => mcp::serve(Arc::clone(&repo)).await?,
+        },
         Some(Commands::Bootstrap { command }) => match command {
             BootstrapCommands::Inspect { name } => {
                 let host = repo.get_host_by_name(&name)?;

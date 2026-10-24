@@ -5,6 +5,7 @@ pub mod config;
 pub mod db;
 pub mod docker;
 pub mod errors;
+pub mod mcp;
 pub mod models;
 pub mod repo;
 pub mod services;

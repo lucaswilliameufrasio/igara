@@ -1,0 +1,18 @@
+{
+  "permissions": {
+    "ask": ["mcp__igara__remote_build"]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "mcp__igara__remote_build",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PROJECT_DIR}/examples/hooks/claude-code/validate-remote-build.sh\""
+          }
+        ]
+      }
+    ]
+  }
+}

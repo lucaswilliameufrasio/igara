@@ -50,6 +50,20 @@ environment variables to the host. The build command itself runs with the SSH
 user's permissions; only run trusted project code on trusted hosts. Private package
 registries or other services may still require their own credentials.
 
+## Agent integration
+
+Igará includes an optional local MCP server for Claude Code and OpenCode. It exposes
+only `list_hosts` (name, connection mode, and default status) and `remote_build`.
+The latter transfers the selected source directory and runs the supplied command as
+the configured SSH user. It is never started automatically by Igará or by the
+example hooks.
+
+Start the stdio server with `igara mcp serve` (or `cargo run -- mcp serve` during
+development). Configuration examples, permission guidance, hook examples, and the
+shared agent skill are documented in
+[docs/agent-integration.md](docs/agent-integration.md). The server keeps stdout
+reserved for MCP messages; remote build output is forwarded to stderr.
+
 ## Local paths
 
 - config dir: `~/.config/igara`

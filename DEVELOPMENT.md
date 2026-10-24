@@ -67,6 +67,9 @@ IGARA_CONFIG_DIR=/tmp/igara-dev cargo run
 The `config` and `repo` modules are tested with in-memory SQLite databases, so they
 don't touch the filesystem outside the test sandbox.
 
+The MCP stdio integration test starts an isolated Igará process and checks its
+JSON-RPC tool catalog. It does not connect to SSH hosts or start remote builds.
+
 ### Docker-dependent tests
 
 Integration tests that require Docker will auto-skip if `docker` is not found in PATH.
@@ -153,7 +156,7 @@ The project uses GitHub Actions with two workflows:
 ## Project structure
 
 ```
-  src/
+src/
   main.rs       – entry point, CLI dispatcher
   lib.rs        – crate root, re-exports all modules
   cli.rs        – clap argument definitions
@@ -165,9 +168,13 @@ The project uses GitHub Actions with two workflows:
   docker.rs     – Docker context management
   bootstrap.rs  – remote host inspection + package install
   build.rs      – remote project source transfer and build execution
+  mcp.rs        – local stdio MCP tools for host summaries and explicit builds
   services.rs   – shared infra deploy (Postgres, Valkey)
   tui.rs        – Ratatui terminal dashboard
   errors.rs     – error types
-migrations/     – SQL migration files (applied in order)
-tests/          – integration tests
+migrations/    – SQL migration files (applied in order)
+tests/         – integration tests
+docs/          – agent integration and configuration guides
+.claude/skills – shared Claude Code/OpenCode skills
+examples/hooks – optional agent hooks
 ```
