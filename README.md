@@ -14,8 +14,8 @@ Igará is a local-first CLI/TUI for registering remote Linux hosts, generating o
 - remote builds for non-Docker projects over SSH
 - remote inspection and bootstrap for Arch/CachyOS, Debian/Ubuntu, and Fedora
 - simple Ratatui dashboard for host overview
-- GitHub Actions workflows for CI and binary releases
-- install script for `curl | sh` or `wget | sh`
+- GitHub Actions workflows for CI and cargo-dist binary releases
+- shell and PowerShell release installers
 
 ## Quick start
 
@@ -73,8 +73,15 @@ reserved for MCP messages; remote build output is forwarded to stderr.
 
 ## Install from GitHub release
 
+The install script delegates to the shell installer attached to the latest
+GitHub Release. Set `IGARA_VERSION` to install a specific release.
+
 ```bash
 curl -fsSL https://raw.githubusercontent.com/lucaswilliameufrasio/igara/main/scripts/install.sh | sh
+```
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/lucaswilliameufrasio/igara/main/scripts/install.sh | IGARA_VERSION=0.1.0 sh
 ```
 
 or
@@ -82,6 +89,8 @@ or
 ```bash
 wget -qO- https://raw.githubusercontent.com/lucaswilliameufrasio/igara/main/scripts/install.sh | sh
 ```
+
+Windows users can run `igara-installer.ps1` from the GitHub Release assets.
 
 ## Contributing
 

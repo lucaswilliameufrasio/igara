@@ -1,0 +1,19 @@
+[workspace]
+members = ["cargo:."]
+
+[dist]
+cargo-dist-version = "0.33.1"
+ci = "github"
+installers = ["shell", "powershell"]
+targets = [
+    "x86_64-unknown-linux-musl",
+    "aarch64-unknown-linux-musl",
+    "x86_64-apple-darwin",
+    "aarch64-apple-darwin",
+    "x86_64-pc-windows-msvc",
+]
+install-path = "~/.local/bin"
+hosting = "github"
+install-updater = false
+# Keep generated CI editable for immutable action pins and scoped permissions.
+allow-dirty = ["ci"]
