@@ -1,0 +1,151 @@
+name: Prepare Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to release (e.g. 0.1.0 or v0.1.0)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: prepare-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Validate release version
+        id: version
+        env:
+          REQUESTED_VERSION: ${{ inputs.version }}
+        shell: bash
+        run: |
+          version="${REQUESTED_VERSION#v}"
+          if [[ ! "$version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "error: version must be stable SemVer (e.g. 0.1.0 or v0.1.0)" >&2
+            exit 1
+          fi
+
+          VERSION="$version" python3 - <<'PY'
+          import os
+          import re
+          import subprocess
+          import sys
+          import tomllib
+
+          def parse(value: str) -> tuple[int, int, int]:
+              if not re.fullmatch(r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)", value):
+                  raise ValueError(f"invalid stable SemVer: {value}")
+              return tuple(int(part) for part in value.split("."))
+
+          requested = os.environ["VERSION"]
+          current = tomllib.load(open("Cargo.toml", "rb"))["package"]["version"]
+          requested_parts = parse(requested)
+          current_parts = parse(current)
+          tags = subprocess.check_output(["git", "tag", "--list", "v*"], text=True).splitlines()
+
+          if f"v{requested}" in tags:
+              sys.exit(f"error: tag v{requested} already exists")
+          if requested_parts < current_parts:
+              sys.exit(f"error: v{requested} is older than the package version {current}")
+          if requested_parts == current_parts and tags:
+              sys.exit("error: the current version may only be released unchanged for the repository's first tagged release")
+          PY
+
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Install git-cliff
+        uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # 2.87.31
+        with:
+          tool: git-cliff@2.14.2
+
+      - name: Generate changelog
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: git cliff --tag "v$VERSION" --output CHANGELOG.md
+
+      - name: Update package version and lockfile
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        shell: bash
+        run: |
+          VERSION="$VERSION" python3 - <<'PY'
+          import os
+          import re
+          from pathlib import Path
+
+          path = Path("Cargo.toml")
+          text = path.read_text()
+          match = re.search(r"(?ms)^\[package\]\s*\n(.*?)(?=^\[|\Z)", text)
+          if match is None:
+              raise SystemExit("error: Cargo.toml has no [package] section")
+
+          section = match.group(1)
+          updated, count = re.subn(
+              r'(?m)^version\s*=\s*"[^"]+"\s*$',
+              f'version = "{os.environ["VERSION"]}"',
+              section,
+              count=1,
+          )
+          if count != 1:
+              raise SystemExit("error: could not update [package].version in Cargo.toml")
+
+          path.write_text(text[:match.start(1)] + updated + text[match.end(1):])
+          PY
+
+          # Cargo updates only the root package entry while preserving the locked dependencies.
+          cargo check --all-features
+
+      - name: Create release preparation PR
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.version.outputs.version }}
+          BRANCH: release/v${{ steps.version.outputs.version }}-${{ github.run_id }}-${{ github.run_attempt }}
+          TITLE: Release v${{ steps.version.outputs.version }}
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add CHANGELOG.md Cargo.toml Cargo.lock
+          if git diff --cached --quiet; then
+            echo "error: release preparation produced no changes" >&2
+            exit 1
+          fi
+          git commit -m "chore(release): prepare for v$VERSION"
+          git push origin "HEAD:$BRANCH"
+
+          cat > "$RUNNER_TEMP/pr-body.md" <<EOF
+          Automated release preparation for **v$VERSION**.
+
+          Review the generated changelog and version/lockfile changes before merging.
+
+          ## After merging
+
+          Pull the merged commit and create the tag that triggers the `Release` workflow:
+
+          \`\`\`bash
+          git checkout main && git pull --ff-only origin main
+          git tag v$VERSION
+          git push origin v$VERSION
+          \`\`\`
+          EOF
+
+          gh pr create \
+            --base main \
+            --head "$BRANCH" \
+            --title "$TITLE" \
+            --body-file "$RUNNER_TEMP/pr-body.md"
