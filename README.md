@@ -4,13 +4,14 @@
 > Conceptually: a lightweight vehicle that carries you across distance.  
 > **A vessel between your workstation and your remote machines.**
 
-Igará is a local-first CLI/TUI for registering remote Linux hosts, generating one SSH key per host, managing `~/.ssh/config` blocks, creating Docker contexts over SSH, and bootstrapping remote machines.
+Igará is a local-first CLI/TUI for registering remote Linux hosts, generating one SSH key per host, managing `~/.ssh/config` blocks, creating Docker contexts over SSH, running project builds remotely, and bootstrapping remote machines.
 
 ## Highlights
 
 - one SSH keypair per host
 - local SQLite metadata store
 - native Docker contexts over SSH
+- remote builds for non-Docker projects over SSH
 - remote inspection and bootstrap for Arch/CachyOS, Debian/Ubuntu, and Fedora
 - simple Ratatui dashboard for host overview
 - GitHub Actions workflows for CI and binary releases
@@ -24,6 +25,30 @@ cargo run -- docker create-context beefy
 cargo run -- docker use beefy
 cargo run -- bootstrap inspect beefy
 ```
+
+## Remote builds
+
+Run any build command on a registered host, syncing the current project directory
+over the existing SSH connection:
+
+```bash
+igara build beefy --source ./my-project -- cargo build --release
+igara build beefy --source ./my-project --keep -- npm run build
+```
+
+The command after `--` runs in a temporary remote workspace as the configured SSH
+user. By default, Igará removes that workspace when the command exits; pass
+`--keep` to retain source files and build artifacts under
+`~/.cache/igara/builds/` on the host. Repeat `--exclude PATTERN` to omit additional
+paths from the transferred source. Igará also excludes common build outputs and
+credential files (including `.git`, `target`, `node_modules`, `.env*`, and private
+key files). Exclusions are tar patterns, not a full `.gitignore` parser; review
+the source and add `--exclude` patterns for project-specific credentials.
+
+Igará uses the existing SSH configuration and does not copy the local SSH key or
+environment variables to the host. The build command itself runs with the SSH
+user's permissions; only run trusted project code on trusted hosts. Private package
+registries or other services may still require their own credentials.
 
 ## Local paths
 

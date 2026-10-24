@@ -4,7 +4,7 @@ use igara::cli::{BootstrapCommands, Cli, Commands, DockerCommands, HostCommands,
 use igara::config::AppPaths;
 use igara::models::{ConnectionMode, CreateHostOptions, HostProfile};
 use igara::repo::HostRepository;
-use igara::{bootstrap, db, docker, ssh, tui};
+use igara::{bootstrap, build, db, docker, ssh, tui};
 use std::sync::Arc;
 use tracing_subscriber::EnvFilter;
 
@@ -190,6 +190,22 @@ async fn main() -> Result<()> {
                 docker::run_docker_command(&host.ssh_alias, &["ps"])?;
             }
         },
+        Some(Commands::Build(args)) => {
+            let host = repo.get_host_by_name(&args.host)?;
+            let retained_path = build::build_project(
+                &host.ssh_alias,
+                &args.source,
+                &args.command,
+                &args.excludes,
+                args.keep,
+            )
+            .await?;
+
+            println!("Build completed on {}", host.name);
+            if let Some(path) = retained_path {
+                println!("Remote workspace retained at {path}");
+            }
+        }
         Some(Commands::Bootstrap { command }) => match command {
             BootstrapCommands::Inspect { name } => {
                 let host = repo.get_host_by_name(&name)?;

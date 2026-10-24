@@ -1,9 +1,10 @@
 use clap::{Args, Parser, Subcommand};
+use std::path::PathBuf;
 
 #[derive(Debug, Parser)]
 #[command(name = "igara")]
 #[command(version)]
-#[command(about = "Remote host bootstrap and docker context manager")]
+#[command(about = "Remote host, build, and docker context manager")]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Option<Commands>,
@@ -27,7 +28,22 @@ pub enum Commands {
         #[command(subcommand)]
         command: BootstrapCommands,
     },
+    Build(BuildArgs),
     Tui,
+}
+
+#[derive(Debug, Args)]
+pub struct BuildArgs {
+    #[arg(value_name = "HOST")]
+    pub host: String,
+    #[arg(long, default_value = ".")]
+    pub source: PathBuf,
+    #[arg(long = "exclude", value_name = "PATTERN")]
+    pub excludes: Vec<String>,
+    #[arg(long)]
+    pub keep: bool,
+    #[arg(last = true, required = true, value_name = "COMMAND")]
+    pub command: Vec<String>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -83,4 +99,46 @@ pub enum DockerCommands {
 pub enum BootstrapCommands {
     Inspect { name: String },
     Apply { name: String },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    #[test]
+    fn build_command_accepts_explicit_source_options_and_command_arguments() {
+        let cli = Cli::try_parse_from([
+            "igara",
+            "build",
+            "beefy",
+            "--source",
+            "./my-project",
+            "--keep",
+            "--exclude",
+            "generated",
+            "--",
+            "cargo",
+            "build",
+            "--release",
+        ])
+        .unwrap();
+
+        let Some(Commands::Build(args)) = cli.command else {
+            panic!("expected build command");
+        };
+
+        assert_eq!(args.host, "beefy");
+        assert_eq!(args.source, PathBuf::from("./my-project"));
+        assert_eq!(args.excludes, vec!["generated"]);
+        assert!(args.keep);
+        assert_eq!(args.command, vec!["cargo", "build", "--release"]);
+    }
+
+    #[test]
+    fn build_command_requires_a_command_after_separator() {
+        let result = Cli::try_parse_from(["igara", "build", "beefy"]);
+
+        assert!(result.is_err());
+    }
 }
