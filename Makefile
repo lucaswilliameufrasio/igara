@@ -1,4 +1,4 @@
-.PHONY: setup format lint check lint-format test test-nocapture test-watch test-all build build-release clean
+.PHONY: setup format lint check lint-format test test-nocapture test-watch test-all test-ssh build build-release clean
 
 setup:
 	cargo install cargo-nextest --locked
@@ -30,6 +30,9 @@ test-watch:
 
 test-all:
 	cargo nextest run --all-features
+
+test-ssh:
+	cargo test --test remote_build_ssh -- --ignored
 
 build:
 	cargo build

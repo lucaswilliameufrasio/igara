@@ -1,8 +1,13 @@
-use color_eyre::eyre::{Context, Result, bail};
-use std::path::Path;
+use crate::owned_process::{OwnedChild, spawn_owned};
+use color_eyre::eyre::{Context, Result, bail, eyre};
+use std::future::Future;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use tokio::io;
-use tokio::process::{Child, Command};
+use std::time::Duration;
+use tokio::io::{self, AsyncReadExt, AsyncWriteExt};
+use tokio::process::Command;
+
+pub use crate::build_options::BuildOptions;
 
 const DEFAULT_EXCLUDES: &[&str] = &[
     ".git",
@@ -45,275 +50,392 @@ pub(crate) enum BuildOutput {
     Stderr,
 }
 
-impl BuildOutput {
-    fn transfer_stdout(self) -> Stdio {
-        match self {
-            Self::Inherit => Stdio::inherit(),
-            Self::Stderr => Stdio::null(),
-        }
-    }
+#[derive(Debug)]
+pub struct BuildResult {
+    pub retained_workspace: Option<String>,
+    pub artifacts: Vec<PathBuf>,
 }
 
+/// Compatibility entry point; defaults are bounded and noninteractive.
 pub async fn build_project(
-    ssh_alias: &str,
+    alias: &str,
     source: &Path,
     command: &[String],
     excludes: &[String],
     keep: bool,
 ) -> Result<Option<String>> {
-    build_project_with_output(
-        ssh_alias,
+    let result = build_project_with_options(
+        alias,
         source,
         command,
         excludes,
         keep,
+        &BuildOptions::default(),
+    )
+    .await?;
+    Ok(result.retained_workspace)
+}
+
+pub async fn build_project_with_options(
+    alias: &str,
+    source: &Path,
+    command: &[String],
+    excludes: &[String],
+    keep: bool,
+    options: &BuildOptions,
+) -> Result<BuildResult> {
+    build_with_output(
+        alias,
+        source,
+        command,
+        excludes,
+        keep,
+        options,
         BuildOutput::Inherit,
     )
     .await
 }
 
-pub(crate) async fn build_project_with_output(
-    ssh_alias: &str,
+pub(crate) async fn build_with_output(
+    alias: &str,
     source: &Path,
     command: &[String],
     excludes: &[String],
     keep: bool,
+    options: &BuildOptions,
     output: BuildOutput,
-) -> Result<Option<String>> {
-    if command.is_empty() {
-        bail!("a build command is required after '--'");
+) -> Result<BuildResult> {
+    options.validate()?;
+    if alias.is_empty() || alias.starts_with('-') || alias.contains(['\0', '\n', '\r']) {
+        bail!("invalid SSH alias");
     }
-
+    if command.first().is_none_or(String::is_empty)
+        || command
+            .iter()
+            .chain(excludes)
+            .any(|value| value.contains('\0'))
+    {
+        bail!("a non-empty executable and NUL-free arguments/excludes are required");
+    }
     if !source.is_dir() {
         bail!("build source is not a directory: {}", source.display());
     }
-
     let source = source
         .canonicalize()
-        .with_context(|| format!("failed to resolve build source {}", source.display()))?;
-    let build_id = uuid7::uuid7().to_string();
-    let remote_path = format!("~/.cache/igara/builds/{build_id}");
-
-    if let Err(error) = transfer_source(ssh_alias, &source, &build_id, excludes, output).await {
-        let _ = cleanup_remote_workspace(ssh_alias, &build_id, output).await;
-        return Err(error);
-    }
-
-    let remote_command = render_remote_build_command(&build_id, command, keep);
-    let mut remote_build = Command::new("ssh");
-    remote_build.arg(ssh_alias).arg(remote_command);
-    let status = run_command(remote_build, output)
-        .await
-        .context("failed to start remote build over SSH");
-
-    let status = match status {
-        Ok(status) => status,
-        Err(error) => {
-            if !keep {
-                let _ = cleanup_remote_workspace(ssh_alias, &build_id, output).await;
+        .context("failed to resolve build source")?;
+    // Validate local destinations before executing any remote code.
+    for artifact in &options.artifacts {
+        let destination = options
+            .output
+            .join(artifact.rsplit('/').next().unwrap_or_default());
+        match destination.symlink_metadata() {
+            Ok(_) => bail!(
+                "refusing to overwrite artifact destination {}",
+                destination.display()
+            ),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(error).with_context(|| {
+                    format!(
+                        "cannot inspect artifact destination {}",
+                        destination.display()
+                    )
+                });
             }
-            return Err(error);
+        }
+    }
+    bounded(options, options.connect_timeout + Duration::from_secs(2), "SSH preflight",
+        status_command(ssh_command(alias, options,
+            "python3 -c 'import os, signal, select; assert hasattr(os, \"WNOWAIT\")' && command -v tar >/dev/null"), output)).await?;
+    let id = uuid7::uuid7().to_string();
+    let remote_path = format!("~/.cache/igara/builds/{id}");
+    let transfer = bounded(
+        options,
+        options.transfer_timeout,
+        "source transfer",
+        transfer_source(alias, &source, &id, excludes, options),
+    )
+    .await;
+    if let Err(error) = transfer {
+        return Err(failure_with_cleanup(error, alias, &id, options, keep).await);
+    }
+    let script = helper_command(
+        "run",
+        &id,
+        &[
+            options.execution_timeout.as_secs_f64().to_string(),
+            serde_json::to_string(command)?,
+        ],
+    );
+    let execution = bounded(
+        options,
+        options.execution_timeout + Duration::from_secs(3),
+        "remote execution",
+        status_command(ssh_command(alias, options, &script), output),
+    )
+    .await;
+    if let Err(error) = execution {
+        return Err(failure_with_cleanup(error, alias, &id, options, keep).await);
+    }
+    let artifacts = match bounded(
+        options,
+        options.transfer_timeout,
+        "artifact transfer",
+        download_artifacts(alias, &id, options),
+    )
+    .await
+    {
+        Ok(paths) => paths,
+        Err(error) => {
+            // Never discard the only remaining copy after a failed download/publication.
+            return Err(eyre!(
+                "{error:#}; workspace retained (if reachable) at {remote_path}"
+            ));
         }
     };
-
-    if !status.success() {
-        if keep {
-            bail!("remote build failed on host '{ssh_alias}'; workspace retained at {remote_path}");
-        }
-        bail!("remote build failed on host '{ssh_alias}'");
+    if !keep {
+        cleanup(alias, &id, options).await.with_context(|| format!(
+            "build succeeded, but cleanup is unconfirmed; workspace may remain at {remote_path}; local artifacts: {artifacts:?}"))?;
     }
+    Ok(BuildResult {
+        retained_workspace: keep.then_some(remote_path),
+        artifacts,
+    })
+}
 
+async fn failure_with_cleanup(
+    error: color_eyre::Report,
+    alias: &str,
+    id: &str,
+    options: &BuildOptions,
+    keep: bool,
+) -> color_eyre::Report {
+    let location = format!("~/.cache/igara/builds/{id}");
     if keep {
-        Ok(Some(remote_path))
-    } else {
-        Ok(None)
+        return eyre!("{error:#}; workspace retained (if created) at {location}");
     }
+    // Cancellation drops stdin/SSH; give the remote supervisor time to stop its group.
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    match cleanup(alias, id, options).await {
+        Ok(()) => eyre!(
+            "{error:#}; workspace removed; remote termination is best-effort on connection loss"
+        ),
+        Err(cleanup_error) => eyre!(
+            "{error:#}; cleanup unconfirmed ({cleanup_error:#}); workspace may remain at {location}"
+        ),
+    }
+}
+
+pub(crate) fn ssh_command(alias: &str, options: &BuildOptions, script: &str) -> Command {
+    let mut command = Command::new("ssh");
+    if let Some(config) = &options.ssh_config {
+        command.arg("-F").arg(config);
+    }
+    command.args([
+        "-T",
+        "-o",
+        "BatchMode=yes",
+        "-o",
+        "StrictHostKeyChecking=yes",
+        "-o",
+        "ConnectionAttempts=1",
+        "-o",
+        "ServerAliveInterval=5",
+        "-o",
+        "ServerAliveCountMax=2",
+        "-o",
+        &format!(
+            "ConnectTimeout={}",
+            options.connect_timeout.as_secs().max(1)
+        ),
+        "--",
+        alias,
+        script,
+    ]);
+    command.kill_on_drop(true);
+    command
+}
+
+async fn bounded<T>(
+    options: &BuildOptions,
+    budget: Duration,
+    phase: &str,
+    future: impl Future<Output = Result<T>>,
+) -> Result<T> {
+    tokio::select! {
+        biased;
+        _ = options.cancellation.cancelled() => bail!("{phase} cancelled"),
+        result = tokio::time::timeout(budget, future) => {
+            result.map_err(|_| eyre!("{phase} timed out after {} seconds", budget.as_secs_f64()))?
+        }
+    }
+}
+
+async fn status_command(mut command: Command, output: BuildOutput) -> Result<()> {
+    // Hold stdin open as an execution lease. Dropping the future closes it.
+    command.stdin(Stdio::piped());
+    if matches!(output, BuildOutput::Stderr) {
+        command.stdout(Stdio::piped());
+    }
+    let mut child = spawn_owned(&mut command).context("failed to start SSH")?;
+    let lease = child.take_stdin();
+    let forwarding = async {
+        if let Some(mut stdout) = child.take_stdout() {
+            io::copy(&mut stdout, &mut io::stderr()).await?;
+        }
+        Ok::<(), std::io::Error>(())
+    };
+    forwarding.await.context("failed to forward build output")?;
+    let status = child.wait().await?;
+    drop(lease);
+    if !status.success() {
+        match status.code() {
+            Some(124) => bail!("remote execution timed out (remote deadline reached)"),
+            Some(125) => bail!("remote execution cancelled (execution lease closed)"),
+            _ => bail!("SSH command failed with {status}"),
+        }
+    }
+    Ok(())
 }
 
 async fn transfer_source(
-    ssh_alias: &str,
+    alias: &str,
     source: &Path,
-    build_id: &str,
+    id: &str,
     excludes: &[String],
-    output: BuildOutput,
+    options: &BuildOptions,
 ) -> Result<()> {
-    let remote_script = format!(
-        "set -eu\n\
-         build_root=\"$HOME/.cache/igara/builds\"\n\
-         workdir=\"$build_root/{build_id}\"\n\
-         mkdir -p \"$build_root\"\n\
-         mkdir \"$workdir\"\n\
-         tar -xf - -C \"$workdir\""
+    let script = format!(
+        "set -eu\nworkdir=\"$HOME/.cache/igara/builds/{id}\"\nmkdir -p \"$(dirname \"$workdir\")\"\nmkdir -m 700 \"$workdir\"\ntar -xf - -C \"$workdir\""
     );
-
-    let mut ssh = Command::new("ssh")
-        .arg(ssh_alias)
-        .arg(remote_sh_command(&remote_script))
-        .stdout(output.transfer_stdout())
-        .stdin(Stdio::piped())
-        .spawn()
-        .context("failed to start SSH source transfer")?;
-
-    let Some(mut ssh_stdin) = ssh.stdin.take() else {
-        let _ = ssh.kill().await;
-        let _ = ssh.wait().await;
-        bail!("failed to open SSH stdin for source transfer");
-    };
-
-    let mut tar = match spawn_tar(source, excludes) {
-        Ok(child) => child,
-        Err(error) => {
-            drop(ssh_stdin);
-            let _ = ssh.kill().await;
-            let _ = ssh.wait().await;
-            return Err(error);
-        }
-    };
-
-    let Some(mut tar_stdout) = tar.stdout.take() else {
-        drop(ssh_stdin);
-        let _ = tar.kill().await;
-        let _ = ssh.kill().await;
-        let _ = tar.wait().await;
-        let _ = ssh.wait().await;
-        bail!("failed to open local tar stdout");
-    };
-
-    let transfer_result = io::copy(&mut tar_stdout, &mut ssh_stdin)
-        .await
-        .context("failed to stream the source archive to the remote host");
-    drop(ssh_stdin);
-
-    if let Err(error) = transfer_result {
-        let _ = tar.kill().await;
-        let _ = ssh.kill().await;
-        let _ = tar.wait().await;
-        let _ = ssh.wait().await;
-        return Err(error);
+    let mut ssh = spawn_owned(
+        ssh_command(alias, options, &script)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null()),
+    )?;
+    let mut tar = spawn_tar(source, excludes)?;
+    let mut input = ssh.take_stdin().ok_or_else(|| eyre!("missing SSH stdin"))?;
+    let mut archive = tar
+        .take_stdout()
+        .ok_or_else(|| eyre!("missing tar stdout"))?;
+    io::copy(&mut archive, &mut input).await?;
+    drop(input);
+    let (tar_status, ssh_status) = tokio::try_join!(tar.wait(), ssh.wait())?;
+    if !tar_status.success() || !ssh_status.success() {
+        bail!("source transfer failed: tar {tar_status}, SSH {ssh_status}");
     }
-
-    let (tar_status, ssh_status) = tokio::join!(tar.wait(), ssh.wait());
-    let tar_status = tar_status.context("failed while creating the local source archive")?;
-    let ssh_status = ssh_status.context("failed while transferring the source archive")?;
-
-    if !tar_status.success() {
-        bail!("creating the local source archive failed");
-    }
-
-    if !ssh_status.success() {
-        bail!("transferring the source archive to '{ssh_alias}' failed");
-    }
-
     Ok(())
 }
 
-fn spawn_tar(source: &Path, excludes: &[String]) -> Result<Child> {
+fn spawn_tar(source: &Path, excludes: &[String]) -> Result<OwnedChild> {
     let mut command = Command::new("tar");
-    command.current_dir(source);
-
-    for pattern in DEFAULT_EXCLUDES {
+    command.current_dir(source).kill_on_drop(true);
+    for pattern in DEFAULT_EXCLUDES
+        .iter()
+        .copied()
+        .chain(excludes.iter().map(String::as_str))
+    {
         command.arg(format!("--exclude={pattern}"));
     }
+    spawn_owned(command.args(["-cf", "-", "."]).stdout(Stdio::piped()))
+        .context("failed to start local tar")
+}
 
-    for pattern in excludes {
-        if pattern.contains('\0') {
-            bail!("exclude patterns cannot contain a NUL byte");
+async fn download_artifacts(alias: &str, id: &str, options: &BuildOptions) -> Result<Vec<PathBuf>> {
+    if options.artifacts.is_empty() {
+        return Ok(Vec::new());
+    }
+    // Stage privately on the destination filesystem for no-replace promotion.
+    std::fs::create_dir_all(&options.output)
+        .context("failed to create artifact output directory")?;
+    let staging = tempfile::tempdir_in(&options.output)?;
+    let mut remaining = options.max_artifact_bytes;
+    let mut staged = Vec::new();
+    for artifact in &options.artifacts {
+        let script = helper_command("artifact", id, std::slice::from_ref(artifact));
+        let mut child = spawn_owned(
+            ssh_command(alias, options, &script)
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped()),
+        )?;
+        let mut stdout = child
+            .take_stdout()
+            .ok_or_else(|| eyre!("missing artifact stdout"))?;
+        let mut header = [0_u8; 9];
+        stdout
+            .read_exact(&mut header)
+            .await
+            .context("invalid artifact header")?;
+        let size = u64::from_be_bytes(header[..8].try_into()?);
+        if size > remaining || header[8] > 1 {
+            bail!(
+                "artifact byte limit exceeded or invalid metadata ({})",
+                options.max_artifact_bytes
+            );
         }
-        command.arg(format!("--exclude={pattern}"));
+        let temporary = tempfile::NamedTempFile::new_in(staging.path())?;
+        let mut file = tokio::fs::File::from_std(temporary.reopen()?);
+        let bytes = io::copy(&mut stdout.take(size + 1), &mut file).await?;
+        file.flush().await?;
+        file.sync_all().await?;
+        drop(file);
+        if bytes != size {
+            bail!("artifact length changed during transfer");
+        }
+        if !child.wait().await?.success() {
+            bail!("failed to retrieve artifact {artifact:?}");
+        }
+        remaining -= bytes;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            temporary
+                .as_file()
+                .set_permissions(std::fs::Permissions::from_mode(if header[8] == 1 {
+                    0o700
+                } else {
+                    0o600
+                }))?;
+        }
+        staged.push((
+            temporary,
+            options
+                .output
+                .join(artifact.rsplit('/').next().unwrap_or_default()),
+        ));
     }
+    let mut published = Vec::new();
+    for (temporary, destination) in staged {
+        temporary.persist_noclobber(&destination).map_err(|error| eyre!(
+            "cannot publish {} without overwriting: {error}; partial local artifacts: {published:?}", destination.display()))?;
+        published.push(destination);
+    }
+    Ok(published)
+}
 
+async fn cleanup(alias: &str, id: &str, options: &BuildOptions) -> Result<()> {
+    let script = format!("rm -rf -- \"$HOME/.cache/igara/builds/{id}\"");
+    // Independent budget/token: cancellation must not suppress cleanup itself.
+    tokio::time::timeout(
+        Duration::from_secs(10),
+        status_command(ssh_command(alias, options, &script), BuildOutput::Stderr),
+    )
+    .await
+    .context("cleanup timed out")?
+}
+
+fn helper_command(operation: &str, id: &str, arguments: &[String]) -> String {
+    let mut command = format!(
+        "python3 -c {} {} {}",
+        shell_quote(include_str!("remote_build.py")),
+        shell_quote(operation),
+        shell_quote(id)
+    );
+    for argument in arguments {
+        command.push(' ');
+        command.push_str(&shell_quote(argument));
+    }
     command
-        .args(["-cf", "-", "."])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
-        .spawn()
-        .context("failed to start tar; install a tar implementation to build remotely")
-}
-
-async fn cleanup_remote_workspace(
-    ssh_alias: &str,
-    build_id: &str,
-    output: BuildOutput,
-) -> Result<()> {
-    let remote_script = format!(
-        "workdir=\"$HOME/.cache/igara/builds/{build_id}\"\n\
-         rm -rf -- \"$workdir\""
-    );
-    let status = Command::new("ssh")
-        .arg(ssh_alias)
-        .arg(remote_sh_command(&remote_script))
-        .stdout(output.transfer_stdout())
-        .status()
-        .await
-        .context("failed to clean up the incomplete remote build workspace")?;
-
-    if !status.success() {
-        bail!("failed to clean up the incomplete remote build workspace");
-    }
-
-    Ok(())
-}
-
-async fn run_command(
-    mut command: Command,
-    output: BuildOutput,
-) -> Result<std::process::ExitStatus> {
-    match output {
-        BuildOutput::Inherit => command.status().await.context("failed to run command"),
-        BuildOutput::Stderr => {
-            let mut child = command
-                .stdout(Stdio::piped())
-                .spawn()
-                .context("failed to start command")?;
-            let Some(mut stdout) = child.stdout.take() else {
-                let _ = child.kill().await;
-                let _ = child.wait().await;
-                bail!("failed to capture command stdout");
-            };
-
-            let mut stderr = io::stderr();
-            if let Err(error) = io::copy(&mut stdout, &mut stderr).await {
-                let _ = child.kill().await;
-                let _ = child.wait().await;
-                return Err(error).context("failed to forward remote build output to stderr");
-            }
-
-            child
-                .wait()
-                .await
-                .context("failed while waiting for command")
-        }
-    }
-}
-
-fn render_remote_build_command(build_id: &str, command: &[String], keep: bool) -> String {
-    remote_sh_command(&remote_build_script(build_id, command, keep))
-}
-
-fn remote_build_script(build_id: &str, command: &[String], keep: bool) -> String {
-    let mut script = format!(
-        "set +e\n\
-         workdir=\"$HOME/.cache/igara/builds/{build_id}\"\n\
-         cd \"$workdir\" || exit 125\n"
-    );
-
-    if !keep {
-        script.push_str("trap 'rm -rf -- \"$workdir\"' 0\n");
-    }
-
-    let mut quoted_command = Vec::with_capacity(command.len());
-    for argument in command {
-        quoted_command.push(shell_quote(argument));
-    }
-    script.push_str("(\n");
-    script.push_str(&quoted_command.join(" "));
-    script.push_str("\n)\nstatus=$?\nexit \"$status\"\n");
-
-    script
-}
-
-fn remote_sh_command(script: &str) -> String {
-    format!("sh -c {}", shell_quote(script))
 }
 
 fn shell_quote(value: &str) -> String {
@@ -326,44 +448,37 @@ mod tests {
 
     #[test]
     fn shell_quote_preserves_shell_metacharacters_as_data() {
-        assert_eq!(shell_quote("cargo"), "'cargo'");
-        assert_eq!(
-            shell_quote("say 'hello'; touch /tmp/nope"),
-            "'say '\"'\"'hello'\"'\"'; touch /tmp/nope'"
-        );
+        assert_eq!(shell_quote("a'b; $(echo no)"), "'a'\"'\"'b; $(echo no)'");
     }
 
     #[test]
-    fn remote_build_command_quotes_each_argument_and_removes_workspace_by_default() {
-        let command = vec![
-            "sh".to_string(),
-            "-c".to_string(),
-            "echo safe; touch /tmp/not-run".to_string(),
-        ];
-
-        let rendered = remote_build_script("build-id", &command, false);
-
-        assert!(rendered.contains("trap 'rm -rf -- \"$workdir\"' 0"));
-        assert!(rendered.contains("'echo safe; touch /tmp/not-run'"));
-        assert!(rendered.contains("cd \"$workdir\" || exit 125"));
-        assert!(rendered.contains("(\n"));
-        assert!(rendered.contains("status=$?\nexit \"$status\""));
-    }
-
-    #[test]
-    fn remote_build_command_keeps_workspace_when_requested() {
-        let rendered = remote_build_script("build-id", &["true".to_string()], true);
-
-        assert!(!rendered.contains("trap 'rm -rf"));
-        assert!(rendered.contains("'true'"));
+    fn artifact_paths_and_basename_collisions_are_rejected() {
+        for path in [
+            "../escape",
+            "/absolute",
+            "dir/../file",
+            "dir//file",
+            "./file",
+            "a\\b",
+            "file\n",
+        ] {
+            let options = BuildOptions {
+                artifacts: vec![path.into()],
+                ..Default::default()
+            };
+            assert!(options.validate().is_err(), "{path:?}");
+        }
+        let options = BuildOptions {
+            artifacts: vec!["a/app".into(), "b/APP".into()],
+            ..Default::default()
+        };
+        assert!(options.validate().is_err());
     }
 
     #[test]
     fn default_excludes_cover_common_build_outputs_and_credentials() {
-        assert!(DEFAULT_EXCLUDES.contains(&"target"));
-        assert!(DEFAULT_EXCLUDES.contains(&"node_modules"));
-        assert!(DEFAULT_EXCLUDES.contains(&".env.*"));
-        assert!(DEFAULT_EXCLUDES.contains(&".ssh"));
-        assert!(DEFAULT_EXCLUDES.contains(&"id_ed25519"));
+        for value in ["target", "node_modules", ".env.*", ".ssh", "id_ed25519"] {
+            assert!(DEFAULT_EXCLUDES.contains(&value));
+        }
     }
 }

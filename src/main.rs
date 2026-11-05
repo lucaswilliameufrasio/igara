@@ -6,7 +6,7 @@ use igara::cli::{
 use igara::config::AppPaths;
 use igara::models::{ConnectionMode, CreateHostOptions, HostProfile};
 use igara::repo::HostRepository;
-use igara::{bootstrap, build, db, docker, mcp, ssh, tui};
+use igara::{bootstrap, build, db, docker, doctor, mcp, ssh, tui};
 use std::sync::Arc;
 use tracing_subscriber::EnvFilter;
 
@@ -22,6 +22,34 @@ async fn main() -> Result<()> {
 
     let cli = Cli::parse();
     let paths = AppPaths::resolve()?;
+    if let Some(Commands::Doctor(args)) = &cli.command {
+        let host = if let Some(name) = &args.host {
+            let connection = rusqlite::Connection::open_with_flags(
+                &paths.db_file,
+                rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+            )?;
+            Some(HostRepository::new(connection).get_host_by_name(name)?)
+        } else {
+            None
+        };
+        let options = build::BuildOptions {
+            connect_timeout: std::time::Duration::from_secs(args.connect_timeout),
+            ssh_config: args.ssh_config.clone(),
+            ..Default::default()
+        };
+        let report = doctor::diagnose(host.as_ref(), &options).await?;
+        if args.json {
+            println!("{}", serde_json::to_string_pretty(&report)?);
+        } else {
+            for check in &report.checks {
+                println!("{:?}\t{}\t{}", check.status, check.name, check.message);
+            }
+        }
+        if report.has_failures() {
+            color_eyre::eyre::bail!("doctor found failed checks");
+        }
+        return Ok(());
+    }
     paths.ensure()?;
     let conn = db::open(&paths.db_file)?;
     let repo = Arc::new(HostRepository::new(conn));
@@ -195,20 +223,43 @@ async fn main() -> Result<()> {
         },
         Some(Commands::Build(args)) => {
             let host = repo.get_host_by_name(&args.host)?;
-            let retained_path = build::build_project(
+            let options = build::BuildOptions {
+                artifacts: args.artifacts,
+                output: args.output,
+                connect_timeout: std::time::Duration::from_secs(args.connect_timeout),
+                transfer_timeout: std::time::Duration::from_secs(args.transfer_timeout),
+                execution_timeout: std::time::Duration::from_secs(args.execution_timeout),
+                max_artifact_bytes: args.max_artifact_bytes,
+                ssh_config: args.ssh_config,
+                ..Default::default()
+            };
+            let cancellation = options.cancellation.clone();
+            let signal = tokio::spawn(async move {
+                if tokio::signal::ctrl_c().await.is_ok() {
+                    cancellation.cancel();
+                }
+            });
+            let result = build::build_project_with_options(
                 &host.ssh_alias,
                 &args.source,
                 &args.command,
                 &args.excludes,
                 args.keep,
+                &options,
             )
-            .await?;
+            .await;
+            signal.abort();
+            let result = result?;
 
             println!("Build completed on {}", host.name);
-            if let Some(path) = retained_path {
+            for path in result.artifacts {
+                println!("Artifact saved to {}", path.display());
+            }
+            if let Some(path) = result.retained_workspace {
                 println!("Remote workspace retained at {path}");
             }
         }
+        Some(Commands::Doctor(_)) => unreachable!("doctor handled before database initialization"),
         Some(Commands::Mcp { command }) => match command {
             McpCommands::Serve => mcp::serve(Arc::clone(&repo)).await?,
         },

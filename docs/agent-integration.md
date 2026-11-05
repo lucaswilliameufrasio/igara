@@ -1,5 +1,23 @@
 # Agent integration
 
+## Reliable build options
+
+`remote_build` also accepts `artifacts` (explicit relative files), `output`
+(local destination directory), `connect_timeout`, `transfer_timeout`,
+`execution_timeout` (seconds), and `max_artifact_bytes`. Existing callers can
+omit them; defaults match the CLI (10/300/3600 seconds, 512 MiB). File basenames
+must be unique and existing files are never replaced. Artifact paths and output
+locations are part of the explicit user-approved operation, not agent-selected
+permission to write arbitrary local paths.
+
+Build logs stay on stderr; tool responses summarize local artifact paths and
+workspace retention. MCP request cancellation uses the same execution lease and
+bounded cleanup path as CLI cancellation. If the transport drops the handler
+before cleanup completes, removal is not guaranteed; remote supervision has its
+own deadline. A remote Linux host needs Python 3 and tar. Host key verification
+is strict and SSH is noninteractive. No tool automatically installs prerequisites
+or runs diagnostics on other hosts.
+
 Igará's MCP server is an optional local stdio process. It reads the same local
 SQLite host registry and SSH configuration as the CLI; it does not expose a
 network listener or accept remote connections.

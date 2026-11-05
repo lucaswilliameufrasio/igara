@@ -18,7 +18,10 @@ request; publishing only starts later, when a version tag is pushed.
 1. Ensure `main` is green and contains the changes to release.
 2. In GitHub, open **Actions → Prepare Release → Run workflow** from `main`.
 3. Enter the release version. For the first release, enter `0.1.0`.
-4. Review and merge the generated pull request. It contains the changelog,
+4. The workflow explicitly dispatches **CI** on the prepared branch and waits
+   for checks on that exact commit (Linux/macOS/Windows checks, real local SSH
+   integration on Linux, and `dist plan`). Only after success does it open a PR
+   linking that validation run. Review and merge the generated pull request. It contains the changelog,
    `Cargo.toml`, and synchronized `Cargo.lock` changes.
 5. After merging, pull the latest `main` and push the matching tag:
 
@@ -38,8 +41,18 @@ x86_64, then creates the GitHub Release and shell/PowerShell installers.
 The `Prepare Release` workflow uses the repository's `GITHUB_TOKEN` to push its
 branch and open a pull request. In **Settings → Actions → General → Workflow
 permissions**, allow read/write access and enable **Allow GitHub Actions to
-create and approve pull requests**. Release preparation is restricted to runs
+create and approve pull requests**. The preparation job requests `actions: write`
+only to explicitly dispatch validation; the CI job token remains read-only.
+Release preparation is restricted to runs
 dispatched from `main`; normal pull-request review is the approval gate.
+
+Bot-created PR/push events may not start downstream workflows with `GITHUB_TOKEN`.
+Do not treat an empty PR checks list as proof of success. The preparation workflow
+uses the supported explicit `workflow_dispatch` path, waits for completion, and
+verifies the run's head SHA. If validation fails, preparation fails and leaves
+the branch for investigation without opening a release PR or creating a tag.
+For manual recovery, dispatch **CI** on that branch, inspect the exact commit's
+results, then retry preparation or open a reviewed PR; never bypass failed checks.
 
 ## Local preflight
 

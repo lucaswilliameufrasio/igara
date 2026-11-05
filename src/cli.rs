@@ -29,6 +29,8 @@ pub enum Commands {
         command: BootstrapCommands,
     },
     Build(BuildArgs),
+    /// Inspect prerequisites without modifying configuration or contacting unselected hosts.
+    Doctor(DoctorArgs),
     Mcp {
         #[command(subcommand)]
         command: McpCommands,
@@ -51,8 +53,38 @@ pub struct BuildArgs {
     pub excludes: Vec<String>,
     #[arg(long)]
     pub keep: bool,
+    /// Workspace-relative regular file to download (repeatable; no globs).
+    #[arg(long = "artifact")]
+    pub artifacts: Vec<String>,
+    /// Destination directory. Artifact basenames must be unique; files are never overwritten.
+    #[arg(long, default_value = "dist")]
+    pub output: PathBuf,
+    #[arg(long, default_value_t = 10, value_parser = clap::value_parser!(u64).range(1..=604800))]
+    pub connect_timeout: u64,
+    #[arg(long, default_value_t = 300, value_parser = clap::value_parser!(u64).range(1..=604800))]
+    pub transfer_timeout: u64,
+    #[arg(long, default_value_t = 3600, value_parser = clap::value_parser!(u64).range(1..=604800))]
+    pub execution_timeout: u64,
+    #[arg(long, default_value_t = 536870912, value_parser = clap::value_parser!(u64).range(1..))]
+    pub max_artifact_bytes: u64,
+    /// Use a dedicated OpenSSH config instead of the default user config.
+    #[arg(long)]
+    pub ssh_config: Option<PathBuf>,
     #[arg(last = true, required = true, value_name = "COMMAND")]
     pub command: Vec<String>,
+}
+
+#[derive(Debug, Args)]
+pub struct DoctorArgs {
+    /// Only this registered host is contacted. Omit for local-only checks.
+    #[arg(long)]
+    pub host: Option<String>,
+    #[arg(long)]
+    pub json: bool,
+    #[arg(long, default_value_t = 10, value_parser = clap::value_parser!(u64).range(1..=604800))]
+    pub connect_timeout: u64,
+    #[arg(long)]
+    pub ssh_config: Option<PathBuf>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -160,6 +192,46 @@ mod tests {
             Some(Commands::Mcp {
                 command: McpCommands::Serve
             })
+        ));
+    }
+
+    #[test]
+    fn build_artifacts_and_budgets_are_explicit_and_validated() {
+        let cli = Cli::try_parse_from([
+            "igara",
+            "build",
+            "fixture",
+            "--artifact",
+            "target/app",
+            "--output",
+            "./results",
+            "--execution-timeout",
+            "30",
+            "--",
+            "true",
+        ])
+        .unwrap();
+        let Some(Commands::Build(args)) = cli.command else {
+            panic!("expected build");
+        };
+        assert_eq!(args.artifacts, vec!["target/app"]);
+        assert_eq!(args.execution_timeout, 30);
+        assert!(
+            Cli::try_parse_from([
+                "igara",
+                "build",
+                "fixture",
+                "--connect-timeout",
+                "0",
+                "--",
+                "true"
+            ])
+            .is_err()
+        );
+        let cli = Cli::try_parse_from(["igara", "doctor", "--host", "fixture", "--json"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Doctor(DoctorArgs { json: true, .. }))
         ));
     }
 }

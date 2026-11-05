@@ -33,6 +33,25 @@ cargo run -- host add --name my-host --hostname 10.0.0.1 --user root
 
 ## Testing
 
+### Remote-build integration (Linux)
+
+`make test-ssh` runs the real production SSH client against a disposable,
+unprivileged loopback OpenSSH daemon using synthetic client/host keys, a private
+remote HOME and a dedicated known_hosts/config. Install OpenSSH server/client,
+Python 3 and tar beforehand. It does not use registered hosts or the user's SSH
+configuration. It fails if those prerequisites are unavailable; these tests are
+explicitly ignored by the default cross-platform suite. CI runs them on Linux.
+No Docker daemon or remote machine is required. The daemon and test directories
+are removed after each fixture. Do not point this fixture at any shared host.
+
+```bash
+make test-ssh
+python3 -m unittest discover -s tests -p 'test_release_validation.py'
+```
+
+These complement `make check`, `cargo test --all-features`,
+`cargo check --all-features` and `cargo build --release`.
+
 ### Run all tests (nextest)
 
 ```bash
@@ -156,6 +175,19 @@ The project uses GitHub Actions with three workflows:
   and builds/publishes installers, archives, and checksums for version tags.
 
 See [docs/releasing.md](docs/releasing.md) for the release procedure.
+
+Action references in CI/preparation were checked against canonical upstream
+releases, notes and public security advisories on 2026-10-25 (none listed):
+
+| Action | Selected reference | Source / decision |
+| --- | --- | --- |
+| checkout | `3d3c42e…` (`v7.0.1`) | [release](https://github.com/actions/checkout/releases/tag/v7.0.1), current supported release |
+| rust-toolchain | `683b588…` (`v1`, current master) | [upstream](https://github.com/dtolnay/rust-toolchain), upstream requires SHAs from master history; Rust input remains `1.99.1` |
+| rust-cache | `d1527c8…` (`v2.9.3`) | [release](https://github.com/Swatinem/rust-cache/releases/tag/v2.9.3), current supported release |
+| install-action | `1e29709…` (`v2.87.31`) | [release](https://github.com/taiki-e/install-action/releases/tag/v2.87.31), pinned git-cliff tool |
+
+The workflows contain full SHAs; abbreviated references above are for readability.
+This is a point-in-time verification, not an ongoing update guarantee.
 
 ## Project structure
 

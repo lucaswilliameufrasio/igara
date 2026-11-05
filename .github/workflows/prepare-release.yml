@@ -19,9 +19,11 @@ jobs:
   prepare:
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     permissions:
       contents: write
       pull-requests: write
+      actions: write
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -128,10 +130,16 @@ jobs:
           git commit -m "chore(release): prepare for v$VERSION"
           git push origin "HEAD:$BRANCH"
 
+          # Bot PR/push events do not reliably trigger downstream checks.
+          # Dispatch the read-only CI on this exact branch and require success.
+          validation_url=$(bash scripts/validate-release-pr.sh "$BRANCH" "$(git rev-parse HEAD)")
+
           cat > "$RUNNER_TEMP/pr-body.md" <<EOF
           Automated release preparation for **v$VERSION**.
 
           Review the generated changelog and version/lockfile changes before merging.
+
+          Prepared-commit validation passed: $validation_url
 
           ## After merging
 
