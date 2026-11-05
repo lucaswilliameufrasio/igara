@@ -79,6 +79,25 @@ fn stdio_server_lists_tools_without_writing_logs_to_stdout()
         .ok_or("remote_build schema did not list required fields")?;
     assert!(required.iter().any(|field| field == "host"));
     assert!(required.iter().any(|field| field == "command"));
+    for field in [
+        "artifacts",
+        "output",
+        "connect_timeout",
+        "transfer_timeout",
+        "execution_timeout",
+        "max_artifact_bytes",
+    ] {
+        assert!(
+            remote_build["inputSchema"]["properties"]
+                .get(field)
+                .is_some(),
+            "{field}"
+        );
+        assert!(
+            !required.iter().any(|required| required == field),
+            "new option became mandatory: {field}"
+        );
+    }
     assert!(
         remote_build["description"]
             .as_str()

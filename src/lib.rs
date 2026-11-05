@@ -1,12 +1,15 @@
 pub mod bootstrap;
 pub mod build;
+mod build_options;
 pub mod cli;
 pub mod config;
 pub mod db;
 pub mod docker;
+pub mod doctor;
 pub mod errors;
 pub mod mcp;
 pub mod models;
+mod owned_process;
 pub mod repo;
 pub mod services;
 pub mod ssh;

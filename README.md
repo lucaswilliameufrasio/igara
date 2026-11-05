@@ -34,10 +34,12 @@ over the existing SSH connection:
 ```bash
 igara build beefy --source ./my-project -- cargo build --release
 igara build beefy --source ./my-project --keep -- npm run build
+igara build beefy --artifact target/release/app --output ./dist -- cargo build --release
 ```
 
 The command after `--` runs in a temporary remote workspace as the configured SSH
-user. By default, Igará removes that workspace when the command exits; pass
+user. By default, Igará removes that workspace after successful execution and
+artifact retrieval; pass
 `--keep` to retain source files and build artifacts under
 `~/.cache/igara/builds/` on the host. Repeat `--exclude PATTERN` to omit additional
 paths from the transferred source. Igará also excludes common build outputs and
@@ -45,10 +47,44 @@ credential files (including `.git`, `target`, `node_modules`, `.env*`, and priva
 key files). Exclusions are tar patterns, not a full `.gitignore` parser; review
 the source and add `--exclude` patterns for project-specific credentials.
 
+Remote Linux hosts need `tar` and Python 3. SSH is noninteractive and requires a
+previously verified host key in `known_hosts` (Igará never disables host-key
+checking). Use `--ssh-config PATH` for an explicit dedicated OpenSSH config.
+
+Repeat `--artifact` to retrieve workspace-relative **regular files**, without
+globs, directory downloads, symlinks or hard links. Files are saved by basename
+under `--output` (default `dist`); duplicate basenames and existing destinations
+are rejected. Downloads have a combined 512 MiB limit (`--max-artifact-bytes`).
+A failed download retains the remote workspace; multiple-file publication can
+partially succeed, and the error reports already published files.
+
+Budgets are in seconds: `--connect-timeout` (10), `--transfer-timeout` (300 per
+source/artifact phase), and `--execution-timeout` (3600). Ctrl+C requests bounded
+cancellation and cleanup. The remote supervisor stops the command's process
+group, including ordinary descendants. Network loss, forced client termination,
+or commands that deliberately daemonize can make termination/cleanup uncertain;
+errors report retained or potentially remaining workspaces. No automatic retries
+repeat a build. See [the design and limitations](docs/remote-build-design.md).
+
 Igará uses the existing SSH configuration and does not copy the local SSH key or
 environment variables to the host. The build command itself runs with the SSH
 user's permissions; only run trusted project code on trusted hosts. Private package
 registries or other services may still require their own credentials.
+
+## Diagnose prerequisites
+
+```bash
+igara doctor --json                  # local tools only; no DB initialization
+igara doctor --host beefy            # explicitly inspect this registered host
+```
+
+Doctor checks local SSH/tar/key-generation tools, optional Docker, the selected
+host's key permissions (Unix; Windows ACLs need manual inspection), bounded SSH
+authentication, Python/process supervision, remote tar/Docker availability and
+home filesystem free space. It does not install tools, fix permissions, create
+configuration or scan other hosts. Docker presence does not prove daemon health;
+free space is a snapshot, not a reservation. Failed checks return a nonzero exit
+status; optional missing tools/low disk space are warnings.
 
 ## Agent integration
 

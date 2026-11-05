@@ -3,6 +3,7 @@ use crate::models::HostProfile;
 use crate::repo::HostRepository;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{CallToolResult, ContentBlock};
+use rmcp::{RoleServer, service::RequestContext};
 use rmcp::{ServiceExt, schemars, tool, tool_router, transport::stdio};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -28,6 +29,19 @@ struct RemoteBuildArgs {
     /// Keep the remote workspace and build artifacts instead of removing them.
     #[serde(default)]
     keep: bool,
+    /// Explicit workspace-relative files to download by basename, without overwriting.
+    #[serde(default)]
+    artifacts: Vec<String>,
+    #[serde(default)]
+    output: Option<String>,
+    #[serde(default)]
+    connect_timeout: Option<u64>,
+    #[serde(default)]
+    transfer_timeout: Option<u64>,
+    #[serde(default)]
+    execution_timeout: Option<u64>,
+    #[serde(default)]
+    max_artifact_bytes: Option<u64>,
 }
 
 #[derive(Debug, Serialize)]
@@ -70,7 +84,11 @@ impl IgaraMcpServer {
     #[tool(
         description = "Explicitly transfer the selected local source directory to a registered host and run the supplied command there as the configured SSH user. This is remote code execution with that user's permissions; call only when the user requested or confirmed this build."
     )]
-    async fn remote_build(&self, Parameters(args): Parameters<RemoteBuildArgs>) -> CallToolResult {
+    async fn remote_build(
+        &self,
+        Parameters(args): Parameters<RemoteBuildArgs>,
+        context: RequestContext<RoleServer>,
+    ) -> CallToolResult {
         if let Err(message) = validate_remote_build_args(&args) {
             return tool_error(message);
         }
@@ -83,23 +101,40 @@ impl IgaraMcpServer {
         };
 
         let source = args.source.as_deref().unwrap_or(".");
-        match build::build_project_with_output(
+        let defaults = build::BuildOptions::default();
+        let options = build::BuildOptions {
+            artifacts: args.artifacts,
+            output: args.output.map(Into::into).unwrap_or(defaults.output),
+            connect_timeout: std::time::Duration::from_secs(args.connect_timeout.unwrap_or(10)),
+            transfer_timeout: std::time::Duration::from_secs(args.transfer_timeout.unwrap_or(300)),
+            execution_timeout: std::time::Duration::from_secs(
+                args.execution_timeout.unwrap_or(3600),
+            ),
+            max_artifact_bytes: args
+                .max_artifact_bytes
+                .unwrap_or(defaults.max_artifact_bytes),
+            cancellation: context.ct.clone(),
+            ssh_config: None,
+        };
+        match build::build_with_output(
             &host.ssh_alias,
             Path::new(source),
             &args.command,
             &args.excludes,
             args.keep,
+            &options,
             BuildOutput::Stderr,
         )
         .await
         {
-            Ok(Some(path)) => CallToolResult::success(vec![ContentBlock::text(format!(
-                "Remote build completed on '{}'. Workspace retained at {path}.",
-                host.name
-            ))]),
-            Ok(None) => CallToolResult::success(vec![ContentBlock::text(format!(
-                "Remote build completed on '{}'; temporary workspace removed.",
-                host.name
+            Ok(result) => CallToolResult::success(vec![ContentBlock::text(format!(
+                "Remote build completed on '{}'. Artifacts: {:?}. {}",
+                host.name,
+                result.artifacts,
+                result
+                    .retained_workspace
+                    .map(|path| format!("Workspace retained at {path}."))
+                    .unwrap_or_else(|| "Temporary workspace removed.".into())
             ))]),
             Err(error) => tool_error(format!("remote build failed on '{}': {error}", host.name)),
         }
@@ -181,6 +216,12 @@ mod tests {
             command: Vec::new(),
             excludes: Vec::new(),
             keep: false,
+            artifacts: Vec::new(),
+            output: None,
+            connect_timeout: None,
+            transfer_timeout: None,
+            execution_timeout: None,
+            max_artifact_bytes: None,
         };
 
         assert_eq!(
