@@ -2,7 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
-## [0.1.0] - 2026-10-24
+## [0.2.0] - 2026-11-06
+
+### Features
+
+- *(build)* [**breaking**] Improve remote builds and diagnostics
+
+### Testing
+
+- *(ssh)* Serialize loopback integration cases
+## [0.1.0] - 2026-10-25
 
 ### Bug Fixes
 
