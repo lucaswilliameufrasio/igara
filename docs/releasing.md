@@ -36,6 +36,18 @@ The tag triggers the generated `Release` workflow. `cargo-dist` builds archives
 and checksums for Linux x86_64/aarch64 (musl), macOS x86_64/aarch64, and Windows
 x86_64, then creates the GitHub Release and shell/PowerShell installers.
 
+## Resume a failed release
+
+Do not move or recreate an existing release tag. If a tag-triggered run fails
+before publishing, merge a reviewed workflow fix, then use **Actions → Release
+→ Run workflow** from `main` and enter the existing stable tag (for example,
+`v0.2.0`). The workflow checks that the tag exists and matches the package
+version, then checks out that tag for every build and publishes against that
+tag. For the resumed run, the Apple Silicon macOS build uses `macos-15`.
+
+Review the complete run and verify the GitHub Release and its expected assets
+before considering the release complete.
+
 ## One-time GitHub setting
 
 The `Prepare Release` workflow uses the repository's `GITHUB_TOKEN` to push its

@@ -17,3 +17,6 @@ hosting = "github"
 install-updater = false
 # Keep generated CI editable for immutable action pins and scoped permissions.
 allow-dirty = ["ci"]
+
+[dist.github-custom-runners.aarch64-apple-darwin]
+runner = "macos-15"
