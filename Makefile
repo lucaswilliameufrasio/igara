@@ -32,7 +32,7 @@ test-all:
 	cargo nextest run --all-features
 
 test-ssh:
-	cargo test --test remote_build_ssh -- --ignored
+	cargo test --test remote_build_ssh -- --ignored --test-threads=1
 
 build:
 	cargo build
