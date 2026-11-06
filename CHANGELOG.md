@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.2.1] - 2026-11-06
+
+### Bug Fixes
+
+- *(release)* Support resuming existing tags
 ## [0.2.0] - 2026-11-06
 
 ### Features
