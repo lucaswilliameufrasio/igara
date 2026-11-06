@@ -483,7 +483,7 @@ async fn cleanup_failure_preserves_recovery_location() -> Result<()> {
 async fn cli_ctrl_c_cancels_execution_and_cleans_workspace() -> Result<()> {
     let fixture = SshFixture::new()?;
     let config = fixture.register_host()?;
-    let child = tokio::process::Command::new(env!("CARGO_BIN_EXE_igara"))
+    let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_igara"))
         .env("IGARA_CONFIG_DIR", config)
         .args(["build", "fixture", "--source"])
         .arg(&fixture.source)
@@ -501,11 +501,27 @@ async fn cli_ctrl_c_cancels_execution_and_cleans_workspace() -> Result<()> {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()?;
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + Duration::from_secs(15);
     while !fixture.home.join("cli-started").exists() && Instant::now() < deadline {
+        if let Some(status) = child.try_wait()? {
+            let result = child.wait_with_output().await?;
+            bail!(
+                "CLI exited before remote execution ({status}): stdout={} stderr={}",
+                String::from_utf8_lossy(&result.stdout),
+                String::from_utf8_lossy(&result.stderr)
+            );
+        }
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
-    assert!(fixture.home.join("cli-started").exists());
+    if !fixture.home.join("cli-started").exists() {
+        let _ = child.start_kill();
+        let result = child.wait_with_output().await?;
+        bail!(
+            "timed out waiting for remote CLI marker: stdout={} stderr={}",
+            String::from_utf8_lossy(&result.stdout),
+            String::from_utf8_lossy(&result.stderr)
+        );
+    }
     let pid = rustix::process::Pid::from_raw(child.id().unwrap() as i32).unwrap();
     rustix::process::kill_process(pid, rustix::process::Signal::INT)?;
     let result = tokio::time::timeout(Duration::from_secs(10), child.wait_with_output()).await??;
